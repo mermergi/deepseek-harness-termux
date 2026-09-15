@@ -225,6 +225,87 @@ if (existsSync(walkPath)) {
   problems.push(`durability walk: ${walkPath} missing`)
 }
 
+// 6. ripgrep for the glob/grep tools. dsh-tool-fs-search spawns the platform
+// build that `@vscode/ripgrep` selects, and that package publishes macOS, Linux
+// and Windows builds only — there is no @vscode/ripgrep-android-arm64, so the
+// import throws and every `glob`/`grep` call fails with
+// `SEARCH_FAILED: ... (ripgrep launch failed)`. Fall back to an `rg` on PATH
+// (Termux ships an android-native one as `pkg install ripgrep`); platforms with
+// a packaged build keep using the pinned binary exactly as before.
+const searchPath = join(nodeModules, '@deepseek-ai', 'dsh-tool-fs-search', 'lib', 'index.js')
+const SEARCH_MARKER = 'ANDROID_PATCH_RG'
+if (existsSync(searchPath)) {
+  const source = readFileSync(searchPath, 'utf8')
+  if (!source.includes(SEARCH_MARKER)) {
+    const importFrom = 'import { existsSync } from "node:fs";'
+    const importTo = 'import { accessSync, constants, existsSync } from "node:fs";'
+    const statement = 'return (await import("@vscode/ripgrep")).rgPath;'
+    const lines = source.split('\n')
+    const hits = lines
+      .map((line, index) => (line.trim() === statement ? index : -1))
+      .filter((index) => index >= 0)
+    const problemsHere = []
+    if (!source.includes(importFrom)) problemsHere.push('node:fs import')
+    if (hits.length !== 1) problemsHere.push(`one packaged-rg return (found ${hits.length})`)
+    if (problemsHere.length > 0) {
+      problems.push(`ripgrep: missing ${JSON.stringify(problemsHere)} in ${searchPath}`)
+    } else {
+      const at = hits[0]
+      const line = lines[at]
+      const indent = line.slice(0, line.length - line.trimStart().length)
+      const unit = indent.includes('\t') ? '\t' : '    '
+      lines.splice(
+        at,
+        1,
+        `${indent}try {`,
+        `${indent}${unit}const packaged = (await import("@vscode/ripgrep")).rgPath;`,
+        `${indent}${unit}if (existsSync(packaged)) return packaged;`,
+        `${indent}} catch (error) {`,
+        `${indent}${unit}/* ${SEARCH_MARKER}: no @vscode/ripgrep build exists for this platform. */`,
+        `${indent}}`,
+        `${indent}const hostRg = findHostRg();`,
+        `${indent}if (hostRg !== undefined) return hostRg;`,
+        `${indent}throw new Error("no usable ripgrep: this platform has no packaged build and no \`rg\` is on PATH (try: pkg install ripgrep)");`,
+      )
+      const helper = `/** ${SEARCH_MARKER}: first executable \`rg\` on PATH, or undefined. */
+function findHostRg() {
+        const separator = process.platform === "win32" ? ";" : ":";
+        for (const dir of (process.env.PATH ?? "").split(separator)) {
+                if (dir === "") continue;
+                const candidate = join(dir, process.platform === "win32" ? "rg.exe" : "rg");
+                try {
+                        accessSync(candidate, constants.X_OK);
+                        return candidate;
+                } catch {
+                        /* not executable, keep looking */
+                }
+        }
+        return void 0;
+}
+`
+      const patched = lines.join('\n').replace(importFrom, importTo)
+      writeFileSync(searchPath, `${patched}\n${helper}`)
+      console.log('ripgrep: falls back to a host `rg` when no packaged build exists')
+    }
+  }
+} else {
+  problems.push(`ripgrep: ${searchPath} missing`)
+}
+
+// The patch only adds a fallback: the install still needs something to run.
+// Either the packaged platform build exists, or an `rg` must be on PATH.
+{
+  const packaged = existsSync(join(nodeModules, '@vscode', `ripgrep-${process.platform}-${process.arch}`))
+  const hostRg = (process.env.PATH ?? "")
+    .split(":")
+    .filter((dir) => dir !== "")
+    .map((dir) => join(dir, "rg"))
+    .find((candidate) => existsSync(candidate))
+  if (!packaged && hostRg === undefined) {
+    problems.push('ripgrep: no packaged build for this platform and no `rg` on PATH — install one with "pkg install ripgrep"')
+  }
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)

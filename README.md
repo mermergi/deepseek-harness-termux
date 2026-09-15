@@ -2,7 +2,7 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的五处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的六处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤。
 
 ## 目录
 
@@ -21,6 +21,7 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 | 系统 | Android + Termux（aarch64 实测通过） |
 | Node.js | `^22.19.0 \|\| >=24.0.0`（dsh 的 engines 要求，实测 v26.4.0） |
 | 编译工具链 | `clang` + `make` + `python`（node-pty 在安卓上没有预编译，要靠 node-gyp 现编） |
+| 搜索工具 | `ripgrep`（`pkg install ripgrep`）：`@vscode/ripgrep` 没有安卓构建，见补丁 6；PATH 里没有 `rg` 时 `glob`/`grep` 工具不可用 |
 | 磁盘 | 约 300 MB（dsh 会拉 515 个 npm 包） |
 | 网络 | 能访问 npm registry 和你选的模型 API（DeepSeek 官方或兼容网关） |
 
@@ -135,7 +136,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-五处都是「安卓缺前提」，不是 dsh 的 bug：
+六处都是「安卓缺前提」，不是 dsh 的 bug：
 
 | # | 现象 | 根因 | 处理 |
 |---|---|---|---|
@@ -144,6 +145,7 @@ this host; refusing to run the command unconfined.
 | 3 | 建文件/会话落盘 `EACCES: permission denied, link ...`；发图片时提示词被拒 | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「硬链接发布」做原子提交 | 按「源文件是否要保留」分两种回退：源是可丢弃临时文件的地方用 `rename`（并复查目标以保留「不覆盖」语义）；源必须存活的地方（附件别名发布、发布后还要 `unlink(源)`）用 `copyFile(..., COPYFILE_EXCL)` 独占复制。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
 | 4 | 启动即崩：`Could not load the "sharp" module using the android-arm64 runtime` | `sharp` 没有 android-arm64 预编译 | 安装官方 WebAssembly 回退版 `@img/sharp-wasm32` |
 | 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
+| 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 先照旧尝试随包二进制；不可用时回退到 PATH 里的 `rg`（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。有平台构建的环境完全不受影响 |
 
 `android-fix.mjs` 触及的文件：
 
@@ -152,6 +154,7 @@ node_modules/@deepseek-ai/node-addon-system/lib/flock.js                  # 2
 node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js      # 2、3
 node_modules/@deepseek-ai/dsh-fs-local/lib/index.js                       # 3
 node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js               # 3、5
+node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js                 # 6
 ~/.dsh/profiles/<name>/package.json                                       # 1
 ```
 
@@ -176,6 +179,7 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
 - **真机发图跑通**：一张 `jpeg 1156x2510` 经 `sharp` 规范化后落盘，附件库里生成了内容寻址的原图对象（文件名与其内容 sha256 一致）与给模型用的缩放版（`543x1178`）；
+- **`glob`/`grep` 工具跑通**：搜索结果的匹配数与系统 `rg` 逐个文件一致（不是"没报错"，而是结果对得上）；
 - 原生模块 `koffi`（官方 `@koromix/koffi-android-arm64` 预编译）与 `node-pty`（本机现编出 `pty.node`，能开出真 PTY）均加载正常。
 
 **已知限制**：

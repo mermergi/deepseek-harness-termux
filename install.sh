@@ -39,8 +39,8 @@ done
 
 # ── 1. 依赖检查 ────────────────────────────────────────────────
 if [ "$INSTALL_DEPS" -eq 1 ]; then
-    say "用 pkg 安装 Termux 依赖（nodejs python clang make）"
-    pkg install -y nodejs python clang make || warn "pkg install 失败，请先手动执行 pkg update"
+    say "用 pkg 安装 Termux 依赖（nodejs python clang make ripgrep）"
+    pkg install -y nodejs python clang make ripgrep || warn "pkg install 失败，请先手动执行 pkg update"
 fi
 
 command -v node >/dev/null 2>&1 || die "没找到 node。先执行：pkg install nodejs"
