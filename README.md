@@ -136,34 +136,18 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-除第 7 处（Web UI 本身就缺手机竖屏布局）外，其余都是「安卓缺前提 / 缺平台条目」，不是 dsh 的 bug：
+| 现象 | 处理 |
+|---|---|
+| 启动崩：`--expose-internals is required for HMR service` | profile 的 `patchReload` 由 `live` 改 `startup` |
+| 会话写不进：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | 安卓上放行 flock（退化为单进程；dsh 给浏览器 worker 也是这么做的） |
+| 建文件 / 落盘 `EACCES ... link` | 硬链接发布改回退：源可丢弃用 `rename`，源要留存用 `COPYFILE_EXCL` 复制 |
+| 启动崩：`Could not load the "sharp" module` | 装 `@img/sharp-wasm32` |
+| 发图被拒（外壳码 `session/agent-busy`） | 祖先目录 fsync 遇 `EACCES`/`EPERM` 就跳过 |
+| `glob`/`grep` 报 `SEARCH_FAILED`（`ripgrep launch failed`） | 补上缺失的 `@vscode/ripgrep-android-arm64`，转发到系统 `rg` |
+| 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航挪到顶部 |
+| 点"打开配置文件"没反应 | android 分支改用 `termux-open`，并按扩展名传 `--content-type` |
 
-| # | 现象 | 根因 | 处理 |
-|---|---|---|---|
-| 1 | 启动即崩：`--expose-internals is required for HMR service` | web profile 默认 `patchReload: live`，启动时会动态加载 HMR 插件；该插件需要 `--expose-internals`，或 `node-addon-require-builtin`——而后者**没有安卓预编译** | 把 profile 的 `patchReload` 由 `live` 改为 `startup`，不再加载 HMR |
-| 2 | 会话无法写入：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | `@deepseek-ai/node-addon-system` 的 flock 绑定只有 linux/darwin 预编译；它用作会话文件的跨进程写锁 | 在安卓上直接放行（dsh 自己给浏览器 worker 就是这么做的）。flock 只防多进程同写一个会话，这里退化为单进程语义 |
-| 3 | 建文件/会话落盘 `EACCES: permission denied, link ...`；发图片时提示词被拒 | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「硬链接发布」做原子提交 | 按「源文件是否要保留」分两种回退：源是可丢弃临时文件的地方用 `rename`（并复查目标以保留「不覆盖」语义）；源必须存活的地方（附件别名发布、发布后还要 `unlink(源)`）用 `copyFile(..., COPYFILE_EXCL)` 独占复制。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
-| 4 | 启动即崩：`Could not load the "sharp" module using the android-arm64 runtime` | `sharp` 没有 android-arm64 预编译 | 安装官方 WebAssembly 回退版 `@img/sharp-wasm32` |
-| 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
-| 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 不改上游代码，而是**补上缺失的平台包**：生成 `@vscode/ripgrep-android-arm64`，里面是一个转发到系统 `rg` 的两行可执行文件（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。这样上游的解析、参数与 Electron 处理都不受影响，也不会再因为上游改代码而失效；有真实构建的平台不会生成 shim |
-| 7 | 手机上**设置页面右侧被挤扁** | 设置外壳是桌面弹窗：`width:800px`（被 `calc(100vw - 48px)` 兜住）+ 固定 `188px` 的导航列并排，**且该包没有任何媒体查询**。412px 手机上弹窗仅约 364px，内容区只剩约 176px | 注入一段 `@media (max-width: 720px)` 覆盖：导航列改为**顶部横向可滚动条**、标题隐藏、内容区占满宽度，弹窗边距收紧并用 `100dvh` 以便软键盘弹出时仍可达。类名是 CSS Module 哈希，脚本每次**从已安装的 bundle 里现读**并就地重写该样式块；选择器双写类名以稳压插件运行时注入的规则 |
-| 8 | 设置里点"打开配置文件"没反应，或选择器里的应用都打不开 | `dsh-native-command` 只声明了 darwin / win32 / linux 三个平台的启动器，安卓上按钮被判定不可用；就算调起 `termux-open`，`.yaml` 这类扩展名没有 MIME 条目，意图会退化成通配类型 | android 分支改用 Termux 的 `termux-open`，并按扩展名传 `--content-type`（文本类 → `text/plain`，图片 / PDF / HTML 给各自类型）。只能只读分享，无法原位保存；"在文件管理器里显示"保持不支持 |
-
-`android-fix.mjs` 触及的文件：
-
-```
-node_modules/@deepseek-ai/node-addon-system/lib/flock.js                  # 2
-node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js      # 2、3
-node_modules/@deepseek-ai/dsh-fs-local/lib/index.js                       # 3
-node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js               # 3、5
-node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js                 # 6
-node_modules/@deepseek-ai/dsh-native-command/lib/index.js                 # 8
-node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html                # 7（写入）
-node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js    # 7（只读，取类名）
-~/.dsh/profiles/<name>/package.json                                       # 1
-```
-
-判断补丁是否在位：在安装目录里 `grep -rl ANDROID_STUB node_modules`（flock）、`grep -rl ANDROID_PATCH node_modules`（硬链接回退）、`grep -rl ANDROID_PATCH_WALK node_modules`（目录同步）、`grep -rl ANDROID_PATCH_OPEN node_modules`（外部应用打开）、`grep -rl ANDROID_PATCH_UI .`（竖屏样式），以及 `test -x node_modules/@vscode/ripgrep-android-arm64/bin/rg && echo shim 在`（ripgrep）。
+原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
 ## 重装或升级之后
 
