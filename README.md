@@ -1,33 +1,35 @@
 # deepseek-harness-termux
 
-让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
+English | [中文](README.zh.md)
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的八处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤（其中第 7 处是 Web UI 的手机竖屏布局，性质与其余不同）。
+Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-## 目录
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the eight patches that are verified to work on a real device into one idempotent script, and provides launch steps you can copy directly (patch 7 — the phone-portrait layout for the Web UI — is a different kind of change from the rest).
 
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-- [做成桌面一键启动](#做成桌面一键启动)
-- [安全提示（务必读）](#安全提示务必读)
-- [补丁清单](#补丁清单)
-- [重装或升级之后](#重装或升级之后)
-- [验证与已知限制](#验证与已知限制)
+## Table of contents
 
-## 环境要求
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Desktop one-tap launch](#desktop-one-tap-launch)
+- [Security notice (read this)](#security-notice-read-this)
+- [Patch list](#patch-list)
+- [After reinstalling or upgrading](#after-reinstalling-or-upgrading)
+- [Verification and notes](#verification-and-notes)
 
-| 项 | 要求 |
+## Requirements
+
+| Item | Requirement |
 |---|---|
-| 系统 | Android + Termux（aarch64 实测通过） |
-| Node.js | `^22.19.0 \|\| >=24.0.0`（dsh 的 engines 要求，实测 v26.4.0） |
-| 编译工具链 | `clang` + `make` + `python`（node-pty 在安卓上没有预编译，要靠 node-gyp 现编） |
-| 搜索工具 | `ripgrep`（`pkg install ripgrep`）：`@vscode/ripgrep` 没有安卓构建，见补丁 6；PATH 里没有 `rg` 时 `glob`/`grep` 工具不可用 |
-| 磁盘 | 约 300 MB（dsh 会拉 515 个 npm 包） |
-| 网络 | 能访问 npm registry 和你选的模型 API（DeepSeek 官方或兼容网关） |
+| OS | Android + Termux (verified on aarch64) |
+| Node.js | `^22.19.0 \|\| >=24.0.0` (dsh's `engines` requirement; verified on v26.4.0) |
+| Build toolchain | `clang` + `make` + `python` (node-pty ships no Android prebuild, so node-gyp has to compile it on device) |
+| Search tool | `ripgrep` (`pkg install ripgrep`): `@vscode/ripgrep` has no Android build, see patch 6; with no `rg` on `PATH` the `glob`/`grep` tools are unavailable |
+| Disk | roughly 300 MB (dsh pulls in 515 npm packages) |
+| Network | access to the npm registry and to the model API of your choice (DeepSeek official, or a compatible gateway) |
 
-## 快速开始
+## Quick start
 
-### 方式 A：一条命令
+### Option A: one command
 
 ```sh
 curl -fsSL -o install.sh \
@@ -35,26 +37,26 @@ curl -fsSL -o install.sh \
 bash install.sh --deps
 ```
 
-`install.sh` 会依次完成：检查 Node 版本与编译工具链 → 把 dsh 装到 `~/dsh` → 补上 `@img/sharp-wasm32` → 打四处补丁 → 装好 `~/.shortcuts/start_dsh.sh`。**可重复运行**：跑失败、修好原因后直接重跑，已完成的步骤会跳过。
+`install.sh` works through the following in order: check the Node version and the build toolchain → install dsh into `~/dsh` → add `@img/sharp-wasm32` → apply the compatibility patches → install `~/.shortcuts/start_dsh.sh`. **It is safe to re-run**: if it fails, fix the cause and run it again; steps that already succeeded are skipped.
 
-| 参数 | 作用 |
+| Flag | Effect |
 |---|---|
-| `--deps` | 顺带用 `pkg install` 安装 Termux 依赖（nodejs python clang make） |
-| `--dir ~/foo` | 换安装目录（会自动写进启动脚本的 `DSH_DIR`） |
-| `--version 0.1.5-rc.1` | 固定 dsh 版本，便于复现 |
+| `--deps` | also install the Termux dependencies with `pkg install` (nodejs python clang make) |
+| `--dir ~/foo` | install somewhere else (the path is written into the launcher's `DSH_DIR`) |
+| `--version 0.1.5-rc.1` | pin the dsh version, for reproducibility |
 
-### 方式 B：手动逐步
+### Option B: manual, step by step
 
-不想跑脚本就照下面走，和方式 A 做的事完全一样——也顺便能看清每一步到底在做什么。
+If you would rather not run a script, follow the steps below — they do exactly what option A does, and they make it clear what each step is for.
 
-#### 1. 装依赖
+#### 1. Install the dependencies
 
 ```sh
 pkg update && pkg install -y nodejs python clang make
-node -v   # 需要 >= 24（或 22.19+）
+node -v   # needs >= 24 (or 22.19+)
 ```
 
-#### 2. 把 dsh 装到一个固定目录
+#### 2. Install dsh into a fixed directory
 
 ```sh
 mkdir -p ~/dsh && cd ~/dsh
@@ -62,14 +64,14 @@ npm install @deepseek-ai/dsh
 npm install @img/sharp-wasm32 sharp
 ```
 
-两个要点：
+Two things matter here:
 
-- **不要用 `npx`。** `npx` 会把包塞进临时目录，补丁没有稳定的落位点。装到 `~/dsh` 这类固定目录。
-- **必须补 `@img/sharp-wasm32`。** `sharp` 没有 android-arm64 预编译，缺了它附件插件会在**启动阶段**直接让 dsh 崩掉，所以这条不是可选项。
+- **Do not use `npx`.** `npx` unpacks the package into a temporary directory, so the patches have no stable place to land. Install into a fixed directory such as `~/dsh`.
+- **`@img/sharp-wasm32` is not optional.** `sharp` ships no android-arm64 prebuild, and without it the attachment plugin crashes dsh **during startup**.
 
-> 想复现本文档验证过的版本：`0.1.5-rc.1`（写本文时的 `latest`）或 `0.1.6-alpha.1`（`alpha` 标签，需显式指定版本才装得到）。
+> To reproduce the versions verified in this document: `0.1.5-rc.1` (the `latest` at the time of writing) or `0.1.6-alpha.1` (the `alpha` tag, which only installs when the version is pinned explicitly).
 
-#### 3. 打补丁
+#### 3. Apply the patches
 
 ```sh
 curl -fsSL -o ~/dsh/android-fix.mjs \
@@ -77,27 +79,27 @@ curl -fsSL -o ~/dsh/android-fix.mjs \
 node ~/dsh/android-fix.mjs
 ```
 
-脚本是**幂等**的：已经打过就跳过，没问题就安静退出。它改动了什么会逐条打印。
+The script is **idempotent**: anything already patched is skipped, and it exits quietly when there is nothing to do. It prints every change it makes.
 
-#### 4. 启动
+#### 4. Launch
 
 ```sh
 node ~/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js web
 ```
 
-它会打印一个带 token 的地址（默认 `http://127.0.0.1:3080`，同时自动打开浏览器）。首次进入请在 **Settings → Models** 里填一次 DeepSeek API key —— 写入 `~/.dsh/.credentials.yaml`，之后不用再填。
+It prints a URL carrying a token (by default `http://127.0.0.1:3080`) and opens the browser for you. The first time, enter your DeepSeek API key once under **Settings → Models** — it is written to `~/.dsh/.credentials.yaml` and you will not be asked for it again.
 
-> **为什么不用 `node_modules/.bin/dsh`：** 那个 shim 的 shebang 是 `#!/usr/bin/env node`，而 Termux 上没有 `/usr/bin/env`。在交互式 shell 里，`termux-exec` 的 `LD_PRELOAD` 会改写 shebang，所以直接执行它**能跑通**——但 Termux:Widget 拉起的新会话没有这个预加载，会直接失败：
+> **Why not `node_modules/.bin/dsh`:** that shim's shebang is `#!/usr/bin/env node`, and Termux has no `/usr/bin/env`. In an interactive shell, `termux-exec`'s `LD_PRELOAD` rewrites the shebang, so executing it directly **does work** — but a fresh session started by Termux:Widget has no such preload and fails outright:
 >
 > ```
 > .../node_modules/.bin/dsh: /usr/bin/env: bad interpreter: No such file or directory
 > ```
 >
-> 所以脚本里一律显式用 `node` 启动 JS 入口。
+> That is why the scripts always start the JS entry point through `node` explicitly.
 
-## 做成桌面一键启动
+## Desktop one-tap launch
 
-用方式 A 装的已经自带这一步了；手动装的话补上：
+Option A already sets this up; for a manual install, add it:
 
 ```sh
 mkdir -p ~/.shortcuts
@@ -106,74 +108,74 @@ curl -fsSL -o ~/.shortcuts/start_dsh.sh \
 chmod +x ~/.shortcuts/start_dsh.sh
 ```
 
-然后在桌面上添加 **Termux:Widget** 小组件，点 `start_dsh.sh` 即可。
+Then add a **Termux:Widget** widget to your home screen and tap `start_dsh.sh`.
 
-- 脚本文件名必须是 **ASCII**。中文文件名在 Termux:Widget 下会直接失败：`env: '<path>': No such file or directory`。
-- 脚本会在启动前自动重跑补丁，所以升级/重装 dsh 后照样能一键起。
-- 再次点按时：端口已被占用就只打开浏览器。首次启动后浏览器会持有 30 天的登录 cookie，所以不需要再管 token；脚本本身也不会重复启动第二个实例。
-- 安装目录不在 `~/dsh` 时：改脚本顶部的 `DSH_DIR`，或用 `DSH_DIR=/your/path` 覆盖。
+- The script's file name must be **ASCII**. A Chinese file name fails outright under Termux:Widget: `env: '<path>': No such file or directory`.
+- The script re-runs the patches before starting, so one tap keeps working after dsh is upgraded or reinstalled.
+- Tapping it again: if the port is already in use it only opens the browser. After the first launch the browser holds a 30-day login cookie, so the token stops mattering; the script never starts a second instance either.
+- If your install directory is not `~/dsh`: change `DSH_DIR` at the top of the script, or override it with `DSH_DIR=/your/path`.
 
-## 安全提示（务必读）
+## Security notice (read this)
 
-`start_dsh.sh` 里有一行：
+`start_dsh.sh` contains this line:
 
 ```sh
 export DSH_PERMISSION_MODE=danger-full-access
 ```
 
-它**同时关闭沙箱和审批询问**。原因是安卓上 `bwrap`（bubblewrap）和 Landlock **都不存在**，而在受限模式（`workspace-write`）下 dsh 会直接拒绝执行任何命令：
+It **disables the sandbox and the approval prompts at the same time**. The reason: on Android neither `bwrap` (bubblewrap) nor Landlock exists, and in a restricted mode (`workspace-write`) dsh then refuses to run any command at all:
 
 ```
 sandbox mode "workspace-write" is requested but no sandbox backend is usable on
 this host; refusing to run the command unconfined.
 ```
 
-也就是说，这台设备上只有「无沙箱」和「不能跑命令」两种状态，没有中间选项。
+In other words, this device has only two states — "no sandbox" and "cannot run commands" — with nothing in between.
 
-**代价**：agent 执行的命令拥有 Termux 的完整权限，能读写你的家目录、SSH 密钥、以及其他 app 配置文件里的 API key。
+**The cost**: commands the agent runs hold Termux's full privileges, and can read and write your home directory, your SSH keys, and the API keys in other apps' configuration files.
 
-**想收回**：删掉那一行 `export`（或改为 `read-only` / `workspace-write`）。代价是 shell / 终端类工具会重新变成不可用，只剩读写文件、搜索、网页等能力。
+**To take it back**: delete that `export` line (or change it to `read-only` / `workspace-write`). The cost is that shell and terminal tools become unavailable again, leaving file read/write, search and web access.
 
-## 补丁清单
+## Patch list
 
-| 现象 | 处理 |
+| Symptom | Fix |
 |---|---|
-| 启动崩：`--expose-internals is required for HMR service` | profile 的 `patchReload` 由 `live` 改 `startup` |
-| 会话写不进：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | 安卓上放行 flock（退化为单进程；dsh 给浏览器 worker 也是这么做的） |
-| 建文件 / 落盘 `EACCES ... link` | 硬链接发布改回退：源可丢弃用 `rename`，源要留存用 `COPYFILE_EXCL` 复制 |
-| 启动崩：`Could not load the "sharp" module` | 装 `@img/sharp-wasm32` |
-| 发图被拒（外壳码 `session/agent-busy`） | 祖先目录 fsync 遇 `EACCES`/`EPERM` 就跳过 |
-| `glob`/`grep` 报 `SEARCH_FAILED`（`ripgrep launch failed`） | 补上缺失的 `@vscode/ripgrep-android-arm64`，转发到系统 `rg` |
-| 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航挪到顶部 |
-| 点"打开配置文件"没反应 | android 分支改用 `termux-open`，并按扩展名传 `--content-type` |
+| Startup crash: `--expose-internals is required for HMR service` | the profile's `patchReload` moves from `live` to `startup` |
+| Sessions cannot be written: `ERR_FLOCK_UNSUPPORTED_PLATFORM` | allow flock on Android (degrading to a single process; dsh does the same for its browser worker) |
+| Creating files / publishing to disk: `EACCES ... link` | hard-link publishing falls back: `rename` when the source can be discarded, a `COPYFILE_EXCL` copy when it has to survive |
+| Startup crash: `Could not load the "sharp" module` | install `@img/sharp-wasm32` |
+| Image sends rejected (shell code `session/agent-busy`) | skip the ancestor-directory fsync when it hits `EACCES`/`EPERM` |
+| `glob`/`grep` report `SEARCH_FAILED` (`ripgrep launch failed`) | supply the missing `@vscode/ripgrep-android-arm64` and forward to the system `rg` |
+| The right side of the settings page is squeezed (phone portrait) | inject a small `<720px` CSS block that moves the navigation to the top |
+| "Open config file" does nothing | the android branch uses `termux-open` instead, passing `--content-type` according to the extension |
 
-原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
+The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
-## 重装或升级之后
+## After reinstalling or upgrading
 
-`npm install` 会覆盖 `node_modules` 里的一切改动，**补丁会丢**。解决办法就是重跑一次：
+`npm install` overwrites everything inside `node_modules`, so **the patches are lost**. The fix is to run them again:
 
 ```sh
 node ~/dsh/android-fix.mjs
 ```
 
-用本仓库的 `start_dsh.sh` 启动时这步会自动完成。
+When you launch through this repository's `start_dsh.sh`, that step happens automatically.
 
-dsh 目前处于 developer preview，升级可能带来破坏性变更。如果脚本报 `missing ...` 之类，说明新版代码里的锚点字符串变了，需要对照新版调整补丁；脚本不会静默跳过，而是明确报出哪个文件没匹配上。
+dsh is in developer preview and upgrades may bring breaking changes. If the script reports something like `missing ...`, an anchor string in the newer code has changed and the patch needs adjusting against it; the script does not skip silently — it names the file that failed to match.
 
-## 验证与已知限制
+## Verification and notes
 
-**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 至 16）：
+**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 to 16):
 
-- dsh `0.1.5-rc.1` 与 `0.1.6-alpha.1` 两版都装得上、补得齐、跑得通（升级到后者后逐项复验）；
-- Web UI 在 `127.0.0.1:3080` 正常返回并可用；
-- 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
-**已知限制**：
+- dsh `0.1.5-rc.1` and `0.1.6-alpha.1` both install, patch and run (re-checked item by item after upgrading to the latter);
+- the Web UI responds and is usable at `127.0.0.1:3080`;
+- one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations.
 
+**Notes**:
 
-- 要编辑配置请用界面里的设置页，或 Termux 里的 `nano ~/.dsh/settings.yaml`。
-- 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
-- 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
+- To edit configuration, use the settings page in the UI, or `nano ~/.dsh/settings.yaml` in Termux.
+- Session data lives in `~/.dsh/sessions/`; note that the conversation content in there is written to disk.
+- This repository is released under the [MIT license](LICENSE) (matching dsh upstream).
 
-上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
-<https://github.com/deepseek-ai/deepseek-harness>（MIT）
+Upstream documentation: <https://deepseek-harness.github.io/deepseek-harness/> ·
+<https://github.com/deepseek-ai/deepseek-harness> (MIT)
