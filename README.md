@@ -211,7 +211,6 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 | `install.sh` | 一条命令装好：检查依赖 → 装 dsh → 补 `sharp-wasm32` → 打补丁 → 装桌面启动脚本 |
 | `android-fix.mjs` | 八处安卓兼容补丁，幂等；上面两个脚本都复用它 |
 | `start_dsh.sh` | Termux:Widget 一键启动脚本 |
-| `npm/` | 可发布的 npm 包 **`dsh-termux`**：别人 `npx dsh-termux` 就能装好并启动。`prepack` 会自动把根目录的 `android-fix.mjs` 同步进包里，避免两份漂移 |
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）
