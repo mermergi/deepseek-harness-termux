@@ -4,7 +4,7 @@
 // Three unrelated Android limitations are handled here; each is listed with the
 // reason it exists and what it costs. `DSH_PERMISSION_MODE` is not a patch: the
 // shipped profile already reads it, and the launcher sets it.
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -164,7 +164,7 @@ if (!existsSync(join(nodeModules, '@img', 'sharp-wasm32'))) {
 // cordis-plugin-hmr at boot. That plugin needs --expose-internals or the
 // android-less node-addon-require-builtin, so it aborts the launch. "startup"
 // drops the live watchers and the plugin with them.
-const profilesDir = join(homedir(), '.dsh', 'profiles')
+const profilesDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
 if (existsSync(profilesDir)) {
   for (const name of readdirSync(profilesDir)) {
     const manifest = join(profilesDir, name, 'package.json')
@@ -227,82 +227,61 @@ if (existsSync(walkPath)) {
 
 // 6. ripgrep for the glob/grep tools. dsh-tool-fs-search spawns the platform
 // build that `@vscode/ripgrep` selects, and that package publishes macOS, Linux
-// and Windows builds only — there is no @vscode/ripgrep-android-arm64, so the
+// and Windows builds only: there is no @vscode/ripgrep-android-arm64, so the
 // import throws and every `glob`/`grep` call fails with
-// `SEARCH_FAILED: ... (ripgrep launch failed)`. Fall back to an `rg` on PATH
-// (Termux ships an android-native one as `pkg install ripgrep`); platforms with
-// a packaged build keep using the pinned binary exactly as before.
-const searchPath = join(nodeModules, '@deepseek-ai', 'dsh-tool-fs-search', 'lib', 'index.js')
+// `SEARCH_FAILED: ... (ripgrep launch failed)`.
+//
+// Editing that resolution proved fragile — 0.1.6 reshaped the code it lived in —
+// so supply the missing platform package instead: a two-line shim that execs
+// the host `rg` (Termux ships an android-native one). Upstream resolution, the
+// argv it builds and its electron/asar fixups then stay untouched, and a
+// platform that has a real build never gets a shim.
+const rgPlatformPackage = join(nodeModules, '@vscode', `ripgrep-${process.platform}-${process.arch}`)
 const SEARCH_MARKER = 'ANDROID_PATCH_RG'
-if (existsSync(searchPath)) {
-  const source = readFileSync(searchPath, 'utf8')
-  if (!source.includes(SEARCH_MARKER)) {
-    const importFrom = 'import { existsSync } from "node:fs";'
-    const importTo = 'import { accessSync, constants, existsSync } from "node:fs";'
-    const statement = 'return (await import("@vscode/ripgrep")).rgPath;'
-    const lines = source.split('\n')
-    const hits = lines
-      .map((line, index) => (line.trim() === statement ? index : -1))
-      .filter((index) => index >= 0)
-    const problemsHere = []
-    if (!source.includes(importFrom)) problemsHere.push('node:fs import')
-    if (hits.length !== 1) problemsHere.push(`one packaged-rg return (found ${hits.length})`)
-    if (problemsHere.length > 0) {
-      problems.push(`ripgrep: missing ${JSON.stringify(problemsHere)} in ${searchPath}`)
-    } else {
-      const at = hits[0]
-      const line = lines[at]
-      const indent = line.slice(0, line.length - line.trimStart().length)
-      const unit = indent.includes('\t') ? '\t' : '    '
-      lines.splice(
-        at,
-        1,
-        `${indent}try {`,
-        `${indent}${unit}const packaged = (await import("@vscode/ripgrep")).rgPath;`,
-        `${indent}${unit}if (existsSync(packaged)) return packaged;`,
-        `${indent}} catch (error) {`,
-        `${indent}${unit}/* ${SEARCH_MARKER}: no @vscode/ripgrep build exists for this platform. */`,
-        `${indent}}`,
-        `${indent}const hostRg = findHostRg();`,
-        `${indent}if (hostRg !== undefined) return hostRg;`,
-        `${indent}throw new Error("no usable ripgrep: this platform has no packaged build and no \`rg\` is on PATH (try: pkg install ripgrep)");`,
+if (process.platform === 'android') {
+  const rgName = 'rg'
+  const hostRg = (process.env.PATH ?? '')
+    .split(':')
+    .filter((dir) => dir !== '')
+    .map((dir) => join(dir, rgName))
+    .find((candidate) => {
+      try {
+        accessSync(candidate, constants.X_OK)
+        return true
+      } catch {
+        return false
+      }
+    })
+  if (hostRg === undefined) {
+    problems.push('ripgrep: no packaged build for android and no `rg` on PATH — install one with "pkg install ripgrep"')
+  } else {
+    const shimDir = join(rgPlatformPackage, 'bin')
+    const shimFile = join(shimDir, rgName)
+    const shell = join(dirname(process.execPath), 'sh')
+    const body = `#!${shell}\n# ${SEARCH_MARKER}: forward to the host ripgrep.\nexec "${hostRg}" "$@"\n`
+    // Rewritten whenever it differs, so a stale shim follows a moved `rg` and a
+    // re-run on an up-to-date install stays silent.
+    if (!existsSync(shimFile) || readFileSync(shimFile, 'utf8') !== body) {
+      mkdirSync(shimDir, { recursive: true })
+      writeFileSync(
+        join(rgPlatformPackage, 'package.json'),
+        `${JSON.stringify(
+          {
+            name: `@vscode/ripgrep-${process.platform}-${process.arch}`,
+            version: '0.0.0-android-shim',
+            private: true,
+            description: `Written by android-fix.mjs; forwards to ${hostRg}`,
+            os: ['android'],
+            cpu: [process.arch],
+          },
+          null,
+          2,
+        )}\n`,
       )
-      const helper = `/** ${SEARCH_MARKER}: first executable \`rg\` on PATH, or undefined. */
-function findHostRg() {
-        const separator = process.platform === "win32" ? ";" : ":";
-        for (const dir of (process.env.PATH ?? "").split(separator)) {
-                if (dir === "") continue;
-                const candidate = join(dir, process.platform === "win32" ? "rg.exe" : "rg");
-                try {
-                        accessSync(candidate, constants.X_OK);
-                        return candidate;
-                } catch {
-                        /* not executable, keep looking */
-                }
-        }
-        return void 0;
-}
-`
-      const patched = lines.join('\n').replace(importFrom, importTo)
-      writeFileSync(searchPath, `${patched}\n${helper}`)
-      console.log('ripgrep: falls back to a host `rg` when no packaged build exists')
+      writeFileSync(shimFile, body)
+      chmodSync(shimFile, 0o755)
+      console.log(`ripgrep: shimmed ${rgPlatformPackage} to the host rg`)
     }
-  }
-} else {
-  problems.push(`ripgrep: ${searchPath} missing`)
-}
-
-// The patch only adds a fallback: the install still needs something to run.
-// Either the packaged platform build exists, or an `rg` must be on PATH.
-{
-  const packaged = existsSync(join(nodeModules, '@vscode', `ripgrep-${process.platform}-${process.arch}`))
-  const hostRg = (process.env.PATH ?? "")
-    .split(":")
-    .filter((dir) => dir !== "")
-    .map((dir) => join(dir, "rg"))
-    .find((candidate) => existsSync(candidate))
-  if (!packaged && hostRg === undefined) {
-    problems.push('ripgrep: no packaged build for this platform and no `rg` on PATH — install one with "pkg install ripgrep"')
   }
 }
 
