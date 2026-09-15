@@ -2,7 +2,7 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的七处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤（其中第 7 处是 Web UI 的手机竖屏布局，性质与前六处不同）。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的八处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤（其中第 7 处是 Web UI 的手机竖屏布局，性质与其余不同）。
 
 ## 目录
 
@@ -136,7 +136,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-前六处都是「安卓缺前提」，不是 dsh 的 bug；第 7 处性质不同——那是 Web UI 本身就缺手机竖屏布局：
+除第 7 处（Web UI 本身就缺手机竖屏布局）外，其余都是「安卓缺前提 / 缺平台条目」，不是 dsh 的 bug：
 
 | # | 现象 | 根因 | 处理 |
 |---|---|---|---|
@@ -147,6 +147,7 @@ this host; refusing to run the command unconfined.
 | 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
 | 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 先照旧尝试随包二进制；不可用时回退到 PATH 里的 `rg`（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。有平台构建的环境完全不受影响 |
 | 7 | 手机上**设置页面右侧被挤扁** | 设置外壳是桌面弹窗：`width:800px`（被 `calc(100vw - 48px)` 兜住）+ 固定 `188px` 的导航列并排，**且该包没有任何媒体查询**。412px 手机上弹窗仅约 364px，内容区只剩约 176px | 注入一段 `@media (max-width: 720px)` 覆盖：导航列改为**顶部横向可滚动条**、标题隐藏、内容区占满宽度，弹窗边距收紧并用 `100dvh` 以便软键盘弹出时仍可达。类名是 CSS Module 哈希，脚本每次**从已安装的 bundle 里现读**并就地重写该样式块；选择器双写类名以稳压插件运行时注入的规则 |
+| 8 | 设置里**点"打开配置文件"没反应/报错** | `dsh-native-command` 把路径交给平台自己的启动器，只声明了 darwin（`open`）/ win32（`Invoke-Item`）/ linux（`xdg-open`）。安卓上 `canOpenNativePath()` 返回 `false`（按钮被判定为不可用），`openNativePath()` 直接抛 `native path opener is unsupported on android` | 给该模块补上 android 分支，用 Termux 自带的 `termux-open`（"Open a file or URL in an external app"）。其余三个平台行为不变；"在文件管理器里显示"**保持不支持**——安卓没有对应语义，界面会退化成显示路径文本，而不是给一个必然失败的按钮 |
 
 `android-fix.mjs` 触及的文件：
 
@@ -156,6 +157,7 @@ node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js      # 2、
 node_modules/@deepseek-ai/dsh-fs-local/lib/index.js                       # 3
 node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js               # 3、5
 node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js                 # 6
+node_modules/@deepseek-ai/dsh-native-command/lib/index.js                 # 8
 node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html                # 7（写入）
 node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js    # 7（只读，取类名）
 ~/.dsh/profiles/<name>/package.json                                       # 1
@@ -190,6 +192,7 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 - **附件/图片链路**：发图已跑通（见上）。注意走 WASM 的 `sharp` 比原生慢；补丁 5 会让"祖先目录 fsync"在安卓上止步于 app 无法打开的那一层，因此极端掉电场景下，`~/.dsh` 以上系统目录的目录项同步由系统负责。
 - **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
 - **手机竖屏只修了设置弹窗**（补丁 7）。主界面仍有 56px 的折叠侧栏轨道，右侧面板、对话区在窄屏下未做适配；上游文档自己把"窗口极窄时中间栏可能不足 400px"列为已知限制。补丁 7 的断点是脚本里的 `max-width: 720px`，觉得该换宽度就改这个值（改完重跑脚本即可，样式块会就地重写）。
+- **"在文件管理器里显示"在安卓上仍不可用**（补丁 8 只补了"用外部应用打开"）。安卓没有"在文件管理器里定位某个文件"的对应动作，所以这类入口会退化为展示路径文本。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
 - 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
 

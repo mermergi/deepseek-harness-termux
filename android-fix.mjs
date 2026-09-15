@@ -372,6 +372,64 @@ if (!existsSync(settingsShellPath) || !existsSync(shellIndexPath)) {
   }
 }
 
+// 8. Handing a path to an external app. dsh-native-command backs the settings
+// header's "Open configuration file" button (the settings controller gates it on
+// canOpenNativePath and opens it with openNativePath), and it knows darwin,
+// win32 and linux only. On Android `canOpenNativePath()` answers false and
+// `openNativePath()` throws `native path opener is unsupported on android`, so
+// the button cannot work at all. Termux ships `termux-open`, which hands a file
+// to an Android app, so wire it in as the android launcher.
+//
+// Reveal-in-file-manager is deliberately left unsupported: Android has no
+// equivalent gesture, and the surfaces then show the path as text instead of
+// offering a button that could only fail.
+const nativeCommandPath = join(nodeModules, '@deepseek-ai', 'dsh-native-command', 'lib', 'index.js')
+const NATIVE_MARKER = 'ANDROID_PATCH_OPEN'
+if (existsSync(nativeCommandPath)) {
+  const source = readFileSync(nativeCommandPath, 'utf8')
+  if (!source.includes(NATIVE_MARKER)) {
+    const lines = source.split('\n')
+    const findLine = (text) => {
+      const hits = lines
+        .map((line, index) => (line.trim() === text ? index : -1))
+        .filter((index) => index >= 0)
+      return hits
+    }
+    const throwLine = 'throw new Error(`native path opener is unsupported on ${platform}`);'
+    const canLine = 'if (platform !== "linux") return false;'
+    const throwHits = findLine(throwLine)
+    const canHits = findLine(canLine)
+    if (throwHits.length !== 1 || canHits.length !== 1) {
+      problems.push(`open in app: anchors not unique in ${nativeCommandPath} (throw ${throwHits.length}, can ${canHits.length})`)
+    } else {
+      const indentOf = (index) => {
+        const line = lines[index]
+        return line.slice(0, line.length - line.trimStart().length)
+      }
+      const unitOf = (indent) => (indent.includes('\t') ? '\t' : '    ')
+      // Insert the android opener immediately before the unsupported-platform throw,
+      // then accept android in the capability probe.
+      const throwIndent = indentOf(throwHits[0])
+      const throwUnit = unitOf(throwIndent)
+      lines.splice(
+        throwHits[0],
+        0,
+        `${throwIndent}if (platform === "android") { /* ${NATIVE_MARKER}: Termux hands the path to an Android app. */`,
+        `${throwIndent}${throwUnit}await run("termux-open", [path], signal);`,
+        `${throwIndent}${throwUnit}return;`,
+        `${throwIndent}}`,
+      )
+      const canIndex = canHits[0] < throwHits[0] ? canHits[0] : canHits[0] + 4
+      const canIndent = indentOf(canIndex)
+      lines.splice(canIndex, 0, `${canIndent}if (platform === "android") return true; /* ${NATIVE_MARKER} */`)
+      writeFileSync(nativeCommandPath, lines.join('\n'))
+      console.log('open in app: android uses termux-open')
+    }
+  }
+} else {
+  problems.push(`open in app: ${nativeCommandPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
