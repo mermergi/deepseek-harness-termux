@@ -141,7 +141,7 @@ this host; refusing to run the command unconfined.
 |---|---|---|---|
 | 1 | 启动即崩：`--expose-internals is required for HMR service` | web profile 默认 `patchReload: live`，启动时会动态加载 HMR 插件；该插件需要 `--expose-internals`，或 `node-addon-require-builtin`——而后者**没有安卓预编译** | 把 profile 的 `patchReload` 由 `live` 改为 `startup`，不再加载 HMR |
 | 2 | 会话无法写入：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | `@deepseek-ai/node-addon-system` 的 flock 绑定只有 linux/darwin 预编译；它用作会话文件的跨进程写锁 | 在安卓上直接放行（dsh 自己给浏览器 worker 就是这么做的）。flock 只防多进程同写一个会话，这里退化为单进程语义 |
-| 3 | 建文件/会话落盘 `EACCES: permission denied, link ...` | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「写临时文件 + 硬链接发布」做原子提交 | 硬链接被拒时改用 `rename` 发布，并先复查目标是否存在以保留「不覆盖」语义。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
+| 3 | 建文件/会话落盘 `EACCES: permission denied, link ...`；发图片时提示词被拒 | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「硬链接发布」做原子提交 | 按「源文件是否要保留」分两种回退：源是可丢弃临时文件的地方用 `rename`（并复查目标以保留「不覆盖」语义）；源必须存活的地方（附件别名发布、发布后还要 `unlink(源)`）用 `copyFile(..., COPYFILE_EXCL)` 独占复制。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
 | 4 | 启动即崩：`Could not load the "sharp" module using the android-arm64 runtime` | `sharp` 没有 android-arm64 预编译 | 安装官方 WebAssembly 回退版 `@img/sharp-wasm32` |
 
 `android-fix.mjs` 触及的文件：
@@ -178,10 +178,14 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 **已知限制**：
 
-- **附件/图片链路未实测**。补丁已打、模块能正常加载，但没有实际传过图片；走 WASM 的 `sharp` 也会比原生慢。
+- **附件/图片链路**：`sharp` 的 WASM 编解码（完整解码、jpeg/webp 编码、rotate）与补丁的发布语义（源文件保留、重复发布报 EEXIST、发布后 `unlink(源)` 成功）都已单独验证，但**在真机 UI 里完整发一张图**我没有实测通过。另注意走 WASM 的 `sharp` 比原生慢。
 - **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
 - 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
+
+### 排障：`prompt rejected (session/agent-busy)`
+
+界面上的这个错误是**外壳错误**：dsh 把提示词准入阶段的一切非预期异常都裹成这个码，真正的原因（`reason` 字段）只在**运行 dsh 的那个终端**里打印，界面不显示。遇到它先看终端输出，再对照上面的补丁清单——例如附件发布失败就会以这个面目出现。
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）

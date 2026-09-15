@@ -44,9 +44,16 @@ if (existsSync(flockPath)) {
 // 2. Hard-link publication. Several writers publish a fully written temp file by
 // hard-linking it onto its final name, which is atomic and refuses to clobber.
 // Android denies hard links anywhere an app may write (SELinux, app data), so
-// every one of them fails with EACCES. Where the link is refused, publish with
-// rename after re-checking the target, which restores the no-clobber contract;
-// platforms that permit hard links keep the original primitive untouched.
+// every one of them fails with EACCES. Platforms that permit hard links keep
+// the original primitive untouched; where the link is refused, the fallback
+// depends on whether the published name must outlive its source:
+//
+//   - the source is a temp this call is done with, and the target should appear
+//     atomically  -> rename, after re-checking the target (see `helper`)
+//   - the source must survive the call (an alias for an existing immutable
+//     object, or a call site followed by unlink(source))  -> exclusive copy
+//     (see `copyHelper`). Renaming there MOVES the source away, which either
+//     destroys the canonical object or strands the follow-up unlink.
 const helper = (signature, linkCall) => `/** ANDROID_PATCH: android denies hard links, so publish by rename instead. */
 async function ${signature} {
         try {
@@ -74,8 +81,28 @@ async function ${signature} {
 }
 `
 
+const copyHelper = `/** ANDROID_PATCH: android denies hard links; publish by exclusive copy that keeps the source. */
+async function copyOrLink(source, target) {
+        try {
+                await link(source, target);
+                return;
+        } catch (error) {
+                const code = error?.code;
+                if (code !== "EACCES" && code !== "EPERM" && code !== "ENOTSUP" && code !== "ENOSYS") throw error;
+        }
+        await copyFile(source, target, constants.COPYFILE_EXCL);
+        const handle = await open(target, "r");
+        try {
+                await handle.sync();
+        } finally {
+                await handle.close();
+        }
+}
+`
+
 const linkPatches = [
   {
+    strategy: 'rename (source is a disposable temp)',
     path: join(nodeModules, '@deepseek-ai', 'dsh-session-persistence-jsonl', 'lib', 'index.js'),
     importFrom: ', readdir, realpath,',
     importTo: ', readdir, rename, realpath,',
@@ -86,18 +113,20 @@ const linkPatches = [
     ],
   },
   {
+    strategy: 'rename (source is a disposable temp)',
     path: join(nodeModules, '@deepseek-ai', 'dsh-fs-local', 'lib', 'index.js'),
     helper: helper('linkFileOrRename(linkFile, source, target)', 'linkFile(source, target)'),
     sites: [['await linkFile(tempPath, absolutePath);', 'await linkFileOrRename(linkFile, tempPath, absolutePath);']],
   },
   {
+    strategy: 'exclusive copy (source must survive the call)',
     path: join(nodeModules, '@deepseek-ai', 'dsh-attachment-local', 'lib', 'index.js'),
     importFrom: '{ chmod, link, mkdir, open, readFile, rename, rm, unlink, writeFile }',
-    importTo: '{ chmod, link, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile }',
-    helper: helper('linkOrRename(source, target)', 'link(source, target)'),
+    importTo: '{ chmod, copyFile, link, mkdir, open, readFile, rename, rm, unlink, writeFile }',
+    helper: copyHelper,
     sites: [
-      ['await link(source, target);', 'await linkOrRename(source, target);'],
-      ['await link(staged.path, target);', 'await linkOrRename(staged.path, target);'],
+      ['await link(source, target);', 'await copyOrLink(source, target);'],
+      ['await link(staged.path, target);', 'await copyOrLink(staged.path, target);'],
     ],
   },
 ]
@@ -122,7 +151,7 @@ for (const patch of linkPatches) {
   for (const [from, to] of patch.sites) patched = patched.replace(from, to)
   // Function declarations hoist, so the helper can live past every call site.
   writeFileSync(patch.path, `${patched}\n${patch.helper}`)
-  console.log(`hard links: rename fallback in ${patch.path.slice(root.length + 1)}`)
+  console.log(`hard links: ${patch.strategy} in ${patch.path.slice(root.length + 1)}`)
 }
 
 // 3. sharp: no android-arm64 prebuilt exists, so the WebAssembly build must be
