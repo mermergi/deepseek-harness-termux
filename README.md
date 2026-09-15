@@ -8,6 +8,7 @@ dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) 
 
 ## Table of contents
 
+- [Demo](#demo)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Desktop one-tap launch](#desktop-one-tap-launch)
@@ -15,6 +16,26 @@ dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) 
 - [Patch list](#patch-list)
 - [After reinstalling or upgrading](#after-reinstalling-or-upgrading)
 - [Verification and notes](#verification-and-notes)
+
+## Demo
+
+![An animated illustration of a hippo riding a bicycle](hippo-bicycle.webp)
+
+Three renderings of the same illustration, left behind by testing how dsh actually runs on this device. They are not screenshots: the PNG is byte-for-byte what this device's `sharp` produces from the SVG, and that is the same WebAssembly `sharp` dsh uses for attachments on Android (patch 4), so the set doubles as evidence that the image path works end to end.
+
+| File | Format | Size | Dimensions | Frames |
+|---|---|---|---|---|
+| [`hippo-bicycle.svg`](hippo-bicycle.svg) | SVG, SMIL-animated (18 `<animate>` elements) | 13 KB | 800×600 | — |
+| [`hippo-bicycle.png`](hippo-bicycle.png) | PNG | 58 KB | 800×600 | 1 |
+| [`hippo-bicycle.webp`](hippo-bicycle.webp) | animated WebP | 279 KB | 480×360 | 24 |
+
+The animated WebP is five times the size of the static PNG while covering fewer pixels, because it carries 24 distinct frames. Count them yourself, from the directory dsh was installed into (the one from step 2, where `sharp` lives) and pointing at the file in your clone:
+
+```sh
+cd ~/dsh
+node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pages))" \
+  ~/deepseek-harness-termux/hippo-bicycle.webp
+```
 
 ## Requirements
 

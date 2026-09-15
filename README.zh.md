@@ -8,6 +8,7 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 
 ## 目录
 
+- [演示素材](#演示素材)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [做成桌面一键启动](#做成桌面一键启动)
@@ -15,6 +16,26 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [补丁清单](#补丁清单)
 - [重装或升级之后](#重装或升级之后)
 - [验证与说明](#验证与说明)
+
+## 演示素材
+
+![一只河马骑自行车的循环动画插画](hippo-bicycle.webp)
+
+同一张插画的三种渲染产物，是测试 dsh 在这台设备上实际跑起来的效果时留下的。它们不是截图：仓库里的 PNG 与本机 `sharp` 从该 SVG 渲出来的结果**逐字节相同**，而这正是 dsh 在安卓上处理附件用的那个 WebAssembly `sharp`（补丁 4），所以这组文件同时也是一条"图片链路真的通了"的旁证。
+
+| 文件 | 格式 | 大小 | 尺寸 | 帧数 |
+|---|---|---|---|---|
+| [`hippo-bicycle.svg`](hippo-bicycle.svg) | SVG，SMIL 动画（18 个 `<animate>`） | 13 KB | 800×600 | — |
+| [`hippo-bicycle.png`](hippo-bicycle.png) | PNG | 58 KB | 800×600 | 1 |
+| [`hippo-bicycle.webp`](hippo-bicycle.webp) | 动画 WebP | 279 KB | 480×360 | 24 |
+
+动画 WebP 覆盖的像素比静态 PNG 少，体积却是它的 5 倍，因为它装了 24 帧**互不相同**的画面。可以自己数：在装 dsh 的目录（第 2 步那个，`sharp` 在里面）执行，文件路径指向你 clone 下来的位置：
+
+```sh
+cd ~/dsh
+node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pages))" \
+  ~/deepseek-harness-termux/hippo-bicycle.webp
+```
 
 ## 环境要求
 
