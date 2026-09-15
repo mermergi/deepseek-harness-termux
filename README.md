@@ -67,7 +67,7 @@ npm install @img/sharp-wasm32 sharp
 - **不要用 `npx`。** `npx` 会把包塞进临时目录，补丁没有稳定的落位点。装到 `~/dsh` 这类固定目录。
 - **必须补 `@img/sharp-wasm32`。** `sharp` 没有 android-arm64 预编译，缺了它附件插件会在**启动阶段**直接让 dsh 崩掉，所以这条不是可选项。
 
-> 想复现本文档验证过的版本：`npm install @deepseek-ai/dsh@0.1.5-rc.1`
+> 想复现本文档验证过的版本：`0.1.5-rc.1`（写本文时的 `latest`）或 `0.1.6-alpha.1`（`alpha` 标签，需显式指定版本才装得到）。
 
 #### 3. 打补丁
 
@@ -145,7 +145,7 @@ this host; refusing to run the command unconfined.
 | 3 | 建文件/会话落盘 `EACCES: permission denied, link ...`；发图片时提示词被拒 | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「硬链接发布」做原子提交 | 按「源文件是否要保留」分两种回退：源是可丢弃临时文件的地方用 `rename`（并复查目标以保留「不覆盖」语义）；源必须存活的地方（附件别名发布、发布后还要 `unlink(源)`）用 `copyFile(..., COPYFILE_EXCL)` 独占复制。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
 | 4 | 启动即崩：`Could not load the "sharp" module using the android-arm64 runtime` | `sharp` 没有 android-arm64 预编译 | 安装官方 WebAssembly 回退版 `@img/sharp-wasm32` |
 | 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
-| 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 先照旧尝试随包二进制；不可用时回退到 PATH 里的 `rg`（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。有平台构建的环境完全不受影响 |
+| 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 不改上游代码，而是**补上缺失的平台包**：生成 `@vscode/ripgrep-android-arm64`，里面是一个转发到系统 `rg` 的两行可执行文件（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。这样上游的解析、参数与 Electron 处理都不受影响，也不会再因为上游改代码而失效；有真实构建的平台不会生成 shim |
 | 7 | 手机上**设置页面右侧被挤扁** | 设置外壳是桌面弹窗：`width:800px`（被 `calc(100vw - 48px)` 兜住）+ 固定 `188px` 的导航列并排，**且该包没有任何媒体查询**。412px 手机上弹窗仅约 364px，内容区只剩约 176px | 注入一段 `@media (max-width: 720px)` 覆盖：导航列改为**顶部横向可滚动条**、标题隐藏、内容区占满宽度，弹窗边距收紧并用 `100dvh` 以便软键盘弹出时仍可达。类名是 CSS Module 哈希，脚本每次**从已安装的 bundle 里现读**并就地重写该样式块；选择器双写类名以稳压插件运行时注入的规则 |
 | 8 | 设置里点"打开配置文件"没反应，或选择器里的应用都打不开 | `dsh-native-command` 只声明了 darwin / win32 / linux 三个平台的启动器，安卓上按钮被判定不可用；就算调起 `termux-open`，`.yaml` 这类扩展名没有 MIME 条目，意图会退化成通配类型 | android 分支改用 Termux 的 `termux-open`，并按扩展名传 `--content-type`（文本类 → `text/plain`，图片 / PDF / HTML 给各自类型）。只能只读分享，无法原位保存；"在文件管理器里显示"保持不支持 |
 
@@ -163,7 +163,7 @@ node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js    # 7（
 ~/.dsh/profiles/<name>/package.json                                       # 1
 ```
 
-判断补丁是否在位：在安装目录里 `grep -rl ANDROID_STUB node_modules`（flock）、`grep -rl ANDROID_PATCH node_modules`（硬链接回退）、`grep -rl ANDROID_PATCH_WALK node_modules`（目录同步）。
+判断补丁是否在位：在安装目录里 `grep -rl ANDROID_STUB node_modules`（flock）、`grep -rl ANDROID_PATCH node_modules`（硬链接回退）、`grep -rl ANDROID_PATCH_WALK node_modules`（目录同步）、`grep -rl ANDROID_PATCH_OPEN node_modules`（外部应用打开）、`grep -rl ANDROID_PATCH_UI .`（竖屏样式），以及 `test -x node_modules/@vscode/ripgrep-android-arm64/bin/rg && echo shim 在`（ripgrep）。
 
 ## 重装或升级之后
 
@@ -179,8 +179,9 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 ## 验证与已知限制
 
-**已验证**（Android + Termux，aarch64，Node v26.4.0，dsh 0.1.5-rc.1，2026-09-15）：
+**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 至 16）：
 
+- dsh `0.1.5-rc.1` 与 `0.1.6-alpha.1` 两版都装得上、补得齐、跑得通（升级到后者后逐项复验）；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
 - **真机发图跑通**：一张 `jpeg 1156x2510` 经 `sharp` 规范化后落盘，附件库里生成了内容寻址的原图对象（文件名与其内容 sha256 一致）与给模型用的缩放版（`543x1178`）；
