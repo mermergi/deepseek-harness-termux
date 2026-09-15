@@ -178,8 +178,56 @@ if (existsSync(profilesDir)) {
   }
 }
 
+// 5. Attachment durability walk. Before an attachment is published, the store
+// fsyncs every ancestor directory up to the filesystem root so a crash cannot
+// drop a directory entry. Android's /data/data is mode 0771: an app may
+// traverse it but not open it, so that walk dies with
+// `EACCES: permission denied, open '/data/data'` and every image send is
+// rejected. An ancestor we cannot open is not ours to sync — the OS created it
+// long ago, and every directory the store actually creates is still synced —
+// so treat an unopenable ancestor as already durable and keep walking.
+const walkPath = join(nodeModules, '@deepseek-ai', 'dsh-attachment-local', 'lib', 'index.js')
+const WALK_MARKER = 'ANDROID_PATCH_WALK'
+if (existsSync(walkPath)) {
+  const source = readFileSync(walkPath, 'utf8')
+  if (!source.includes(WALK_MARKER)) {
+    // The bundled file mixes tabs and spaces, so match on the trimmed statement
+    // and rebuild the block using whatever indentation that line already had.
+    const statement = 'const handle = await open(path, constants.O_RDONLY);'
+    const lines = source.split('\n')
+    const hits = lines
+      .map((line, index) => (line.trim() === statement ? index : -1))
+      .filter((index) => index >= 0)
+    if (hits.length !== 1) {
+      problems.push(`durability walk: expected 1 open() statement in ${walkPath}, found ${hits.length}`)
+    } else {
+      const at = hits[0]
+      const line = lines[at]
+      const indent = line.slice(0, line.length - line.trimStart().length)
+      const unit = indent.includes('\t') ? '\t' : '    '
+      const guard = [
+        `${indent}// ${WALK_MARKER}: an ancestor the app cannot open is not ours to sync.`,
+        `${indent}let handle;`,
+        `${indent}try {`,
+        `${indent}${unit}handle = await open(path, constants.O_RDONLY);`,
+        `${indent}} catch (error) {`,
+        `${indent}${unit}const code = error?.code;`,
+        `${indent}${unit}if (code === "EACCES" || code === "EPERM") return;`,
+        `${indent}${unit}throw error;`,
+        `${indent}}`,
+      ]
+      lines.splice(at, 1, ...guard)
+      writeFileSync(walkPath, lines.join('\n'))
+      console.log('durability walk: unopenable ancestors no longer fail attachment writes')
+    }
+  }
+} else {
+  problems.push(`durability walk: ${walkPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
   process.exit(1)
 }
+

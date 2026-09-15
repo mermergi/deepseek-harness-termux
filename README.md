@@ -2,7 +2,7 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的四处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的五处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤。
 
 ## 目录
 
@@ -135,7 +135,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-四处都是「安卓缺前提」，不是 dsh 的 bug：
+五处都是「安卓缺前提」，不是 dsh 的 bug：
 
 | # | 现象 | 根因 | 处理 |
 |---|---|---|---|
@@ -143,18 +143,19 @@ this host; refusing to run the command unconfined.
 | 2 | 会话无法写入：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | `@deepseek-ai/node-addon-system` 的 flock 绑定只有 linux/darwin 预编译；它用作会话文件的跨进程写锁 | 在安卓上直接放行（dsh 自己给浏览器 worker 就是这么做的）。flock 只防多进程同写一个会话，这里退化为单进程语义 |
 | 3 | 建文件/会话落盘 `EACCES: permission denied, link ...`；发图片时提示词被拒 | **安卓禁止在 app 目录创建硬链接**（SELinux；`ln` 在本仓库实测的家目录、`$PREFIX`、外置存储下全部 EACCES）。而 dsh 的会话落盘、写文件工具、附件存储都用「硬链接发布」做原子提交 | 按「源文件是否要保留」分两种回退：源是可丢弃临时文件的地方用 `rename`（并复查目标以保留「不覆盖」语义）；源必须存活的地方（附件别名发布、发布后还要 `unlink(源)`）用 `copyFile(..., COPYFILE_EXCL)` 独占复制。**只在硬链接真的被拒时回退**，Linux/macOS 行为不变 |
 | 4 | 启动即崩：`Could not load the "sharp" module using the android-arm64 runtime` | `sharp` 没有 android-arm64 预编译 | 安装官方 WebAssembly 回退版 `@img/sharp-wasm32` |
+| 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
 
 `android-fix.mjs` 触及的文件：
 
 ```
-node_modules/@deepseek-ai/node-addon-system/lib/flock.js                  # 1
+node_modules/@deepseek-ai/node-addon-system/lib/flock.js                  # 2
 node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js      # 2、3
 node_modules/@deepseek-ai/dsh-fs-local/lib/index.js                       # 3
-node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js               # 3
-~/.dsh/profiles/<name>/package.json                                       # 1 的补丁层
+node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js               # 3、5
+~/.dsh/profiles/<name>/package.json                                       # 1
 ```
 
-判断补丁是否在位：在安装目录里 `grep -r ANDROID_STUB node_modules`（flock）与 `grep -r ANDROID_PATCH node_modules`（硬链接回退）。
+判断补丁是否在位：在安装目录里 `grep -rl ANDROID_STUB node_modules`（flock）、`grep -rl ANDROID_PATCH node_modules`（硬链接回退）、`grep -rl ANDROID_PATCH_WALK node_modules`（目录同步）。
 
 ## 重装或升级之后
 
@@ -174,18 +175,21 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
+- **真机发图跑通**：一张 `jpeg 1156x2510` 经 `sharp` 规范化后落盘，附件库里生成了内容寻址的原图对象（文件名与其内容 sha256 一致）与给模型用的缩放版（`543x1178`）；
 - 原生模块 `koffi`（官方 `@koromix/koffi-android-arm64` 预编译）与 `node-pty`（本机现编出 `pty.node`，能开出真 PTY）均加载正常。
 
 **已知限制**：
 
-- **附件/图片链路**：`sharp` 的 WASM 编解码（完整解码、jpeg/webp 编码、rotate）与补丁的发布语义（源文件保留、重复发布报 EEXIST、发布后 `unlink(源)` 成功）都已单独验证，但**在真机 UI 里完整发一张图**我没有实测通过。另注意走 WASM 的 `sharp` 比原生慢。
+- **附件/图片链路**：发图已跑通（见上）。注意走 WASM 的 `sharp` 比原生慢；补丁 5 会让"祖先目录 fsync"在安卓上止步于 app 无法打开的那一层，因此极端掉电场景下，`~/.dsh` 以上系统目录的目录项同步由系统负责。
 - **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
 - 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
 
 ### 排障：`prompt rejected (session/agent-busy)`
 
-界面上的这个错误是**外壳错误**：dsh 把提示词准入阶段的一切非预期异常都裹成这个码，真正的原因（`reason` 字段）只在**运行 dsh 的那个终端**里打印，界面不显示。遇到它先看终端输出，再对照上面的补丁清单——例如附件发布失败就会以这个面目出现。
+界面上的这个错误是**外壳错误**：dsh 把提示词准入阶段的一切非预期异常都裹成这个码，真正的原因（`reason` 字段）只在**运行 dsh 的那个终端**里打印，界面不显示；被拒的提示词也不写入会话日志，事后无从追溯。
+
+排查办法：在 `node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js` 里找到抛出 `"session/agent-busy"` 的那一行，在它前面插一句 `console.error(error)` 重启服务即可看到真实原因（补丁 5 就是这样定位出来的）。
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）
