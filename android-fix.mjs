@@ -306,6 +306,72 @@ function findHostRg() {
   }
 }
 
+// 7. Portrait layout for the settings dialog. The settings shell is a desktop
+// dialog: an 800px panel (capped to 100vw - 48px) holding a fixed 188px
+// navigation column beside the content, and the package ships no media query at
+// all. On a 412px phone the panel is ~364px, leaving the content ~176px —
+// cramped on the right. Below 720px, stack the navigation above the content and
+// let it scroll sideways, which hands the content the full width.
+//
+// The class names are CSS-module hashes that change whenever the app is rebuilt,
+// so they are read from the installed bundle and the generated block is
+// rewritten in place. Selectors double the class name to outrank the plugin's
+// own runtime-injected rules regardless of document order.
+const settingsShellPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-settings-general', 'lib', 'client.js')
+const shellIndexPath = join(nodeModules, '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html')
+const UI_START = '<!-- ANDROID_PATCH_UI -->'
+const UI_END = '<!-- /ANDROID_PATCH_UI -->'
+if (!existsSync(settingsShellPath) || !existsSync(shellIndexPath)) {
+  problems.push(`settings layout: missing ${existsSync(settingsShellPath) ? shellIndexPath : settingsShellPath}`)
+} else {
+  const shellSource = readFileSync(settingsShellPath, 'utf8')
+  const shellPrefix = /\.([A-Za-z0-9]+)_nav\{/.exec(shellSource)?.[1]
+  if (shellPrefix === undefined) {
+    problems.push(`settings layout: no class prefix found in ${settingsShellPath}`)
+  } else {
+    const wanted = ['panel', 'nav', 'navTitle', 'navList', 'navCell', 'navLabel', 'content', 'header', 'options']
+    const absent = wanted.filter((name) => !shellSource.includes(`.${shellPrefix}_${name}{`))
+    if (absent.length > 0) {
+      problems.push(`settings layout: classes missing from the bundle: ${absent.join(', ')}`)
+    } else {
+      const sel = (name) => `.${shellPrefix}_${name}.${shellPrefix}_${name}`
+      const block = [
+        UI_START,
+        '<style>',
+        '/* Android/Termux portrait fix for the settings dialog — written by android-fix.mjs. */',
+        '@media (max-width: 720px) {',
+        `  ${sel('panel')} { flex-direction: column; max-width: calc(100vw - 16px); height: min(800px, 100vh - 16px); height: min(800px, 100dvh - 16px); }`,
+        `  ${sel('nav')} { flex-direction: row; width: auto; max-width: 100%; gap: 6px; padding: 10px 10px 0; overflow-x: auto; }`,
+        `  ${sel('navTitle')} { display: none; }`,
+        `  ${sel('navList')} { flex-direction: row; gap: 4px; }`,
+        `  ${sel('navCell')} { flex: none; height: 34px; padding: 6px 10px; }`,
+        `  ${sel('navLabel')} { flex: none; white-space: nowrap; }`,
+        `  ${sel('content')} { min-height: 0; }`,
+        `  ${sel('header')} { height: auto; padding: 12px 12px 6px; }`,
+        `  ${sel('options')} { padding: 0 12px 16px; }`,
+        '}',
+        '</style>',
+        UI_END,
+      ].join('\n')
+      const html = readFileSync(shellIndexPath, 'utf8')
+      const from = html.indexOf(UI_START)
+      const to = html.indexOf(UI_END)
+      let patched
+      if (from >= 0 && to > from) {
+        patched = `${html.slice(0, from)}${block}${html.slice(to + UI_END.length)}`
+      } else if (html.includes('</head>')) {
+        patched = html.replace('</head>', `${block}\n  </head>`)
+      } else {
+        patched = `${html}\n${block}\n`
+      }
+      if (patched !== html) {
+        writeFileSync(shellIndexPath, patched)
+        console.log('settings layout: navigation stacks above the content below 720px')
+      }
+    }
+  }
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
