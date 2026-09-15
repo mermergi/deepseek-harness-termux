@@ -28,4 +28,10 @@ if port_open; then
 fi
 
 # 前台运行服务器（保持进程存活，dsh 自己会打开浏览器）
-exec "$DSH_DIR/node_modules/.bin/dsh" web
+#
+# 这里必须显式用 node 启动，不要写成 node_modules/.bin/dsh。
+# 那个 shim 是指向 lib/bin.js 的符号链接，shebang 为 #!/usr/bin/env node，
+# 而 Termux 上并不存在 /usr/bin/env。交互式 shell 里因为 termux-exec 的
+# LD_PRELOAD 会改写 shebang 而侥幸能跑，但 Termux:Widget 拉起的新会话没有它，
+# 会直接报 "/usr/bin/env: bad interpreter: No such file or directory"。
+exec node "$DSH_DIR/node_modules/@deepseek-ai/dsh/lib/bin.js" web

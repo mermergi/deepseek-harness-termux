@@ -81,10 +81,18 @@ node ~/dsh/android-fix.mjs
 #### 4. 启动
 
 ```sh
-~/dsh/node_modules/.bin/dsh web
+node ~/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js web
 ```
 
 它会打印一个带 token 的地址（默认 `http://127.0.0.1:3080`，同时自动打开浏览器）。首次进入请在 **Settings → Models** 里填一次 DeepSeek API key —— 写入 `~/.dsh/.credentials.yaml`，之后不用再填。
+
+> **为什么不用 `node_modules/.bin/dsh`：** 那个 shim 的 shebang 是 `#!/usr/bin/env node`，而 Termux 上没有 `/usr/bin/env`。在交互式 shell 里，`termux-exec` 的 `LD_PRELOAD` 会改写 shebang，所以直接执行它**能跑通**——但 Termux:Widget 拉起的新会话没有这个预加载，会直接失败：
+>
+> ```
+> .../node_modules/.bin/dsh: /usr/bin/env: bad interpreter: No such file or directory
+> ```
+>
+> 所以脚本里一律显式用 `node` 启动 JS 入口。
 
 ## 做成桌面一键启动
 
