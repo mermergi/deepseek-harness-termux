@@ -13,7 +13,6 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [补丁清单](#补丁清单)
 - [重装或升级之后](#重装或升级之后)
 - [验证与已知限制](#验证与已知限制)
-- [仓库内容](#仓库内容)
 
 ## 环境要求
 
@@ -203,14 +202,6 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 界面上的这个错误是**外壳错误**：dsh 把提示词准入阶段的一切非预期异常都裹成这个码，真正的原因（`reason` 字段）只在**运行 dsh 的那个终端**里打印，界面不显示；被拒的提示词也不写入会话日志，事后无从追溯。
 
 排查办法：在 `node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js` 里找到抛出 `"session/agent-busy"` 的那一行，在它前面插一句 `console.error(error)` 重启服务即可看到真实原因（补丁 5 就是这样定位出来的）。
-
-## 仓库内容
-
-| 文件 | 作用 |
-|---|---|
-| `install.sh` | 一条命令装好：检查依赖 → 装 dsh → 补 `sharp-wasm32` → 打补丁 → 装桌面启动脚本 |
-| `android-fix.mjs` | 八处安卓兼容补丁，幂等；上面两个脚本都复用它 |
-| `start_dsh.sh` | Termux:Widget 一键启动脚本 |
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）
