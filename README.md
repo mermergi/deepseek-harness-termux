@@ -26,14 +26,34 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 
 ## 快速开始
 
-### 1. 装依赖
+### 方式 A：一条命令
+
+```sh
+curl -fsSL -o install.sh \
+  https://raw.githubusercontent.com/mermergi/deepseek-harness-termux/main/install.sh
+bash install.sh --deps
+```
+
+`install.sh` 会依次完成：检查 Node 版本与编译工具链 → 把 dsh 装到 `~/dsh` → 补上 `@img/sharp-wasm32` → 打四处补丁 → 装好 `~/.shortcuts/start_dsh.sh`。**可重复运行**：跑失败、修好原因后直接重跑，已完成的步骤会跳过。
+
+| 参数 | 作用 |
+|---|---|
+| `--deps` | 顺带用 `pkg install` 安装 Termux 依赖（nodejs python clang make） |
+| `--dir ~/foo` | 换安装目录（会自动写进启动脚本的 `DSH_DIR`） |
+| `--version 0.1.5-rc.1` | 固定 dsh 版本，便于复现 |
+
+### 方式 B：手动逐步
+
+不想跑脚本就照下面走，和方式 A 做的事完全一样——也顺便能看清每一步到底在做什么。
+
+#### 1. 装依赖
 
 ```sh
 pkg update && pkg install -y nodejs python clang make
 node -v   # 需要 >= 24（或 22.19+）
 ```
 
-### 2. 把 dsh 装到一个固定目录
+#### 2. 把 dsh 装到一个固定目录
 
 ```sh
 mkdir -p ~/dsh && cd ~/dsh
@@ -48,7 +68,7 @@ npm install @img/sharp-wasm32 sharp
 
 > 想复现本文档验证过的版本：`npm install @deepseek-ai/dsh@0.1.5-rc.1`
 
-### 3. 打补丁
+#### 3. 打补丁
 
 ```sh
 curl -fsSL -o ~/dsh/android-fix.mjs \
@@ -58,7 +78,7 @@ node ~/dsh/android-fix.mjs
 
 脚本是**幂等**的：已经打过就跳过，没问题就安静退出。它改动了什么会逐条打印。
 
-### 4. 启动
+#### 4. 启动
 
 ```sh
 ~/dsh/node_modules/.bin/dsh web
@@ -67,6 +87,8 @@ node ~/dsh/android-fix.mjs
 它会打印一个带 token 的地址（默认 `http://127.0.0.1:3080`，同时自动打开浏览器）。首次进入请在 **Settings → Models** 里填一次 DeepSeek API key —— 写入 `~/.dsh/.credentials.yaml`，之后不用再填。
 
 ## 做成桌面一键启动
+
+用方式 A 装的已经自带这一步了；手动装的话补上：
 
 ```sh
 mkdir -p ~/.shortcuts
@@ -151,7 +173,7 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 - **附件/图片链路未实测**。补丁已打、模块能正常加载，但没有实际传过图片；走 WASM 的 `sharp` 也会比原生慢。
 - **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
-- 本仓库未附加开源许可证，使用前请自行决定。
+- 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）
