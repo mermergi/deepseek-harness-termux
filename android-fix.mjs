@@ -387,18 +387,22 @@ const nativeCommandPath = join(nodeModules, '@deepseek-ai', 'dsh-native-command'
 const NATIVE_MARKER = 'ANDROID_PATCH_OPEN'
 if (existsSync(nativeCommandPath)) {
   const source = readFileSync(nativeCommandPath, 'utf8')
-  if (!source.includes(NATIVE_MARKER)) {
+  if (!source.includes(`${NATIVE_MARKER}_TYPE`)) {
     const lines = source.split('\n')
-    const findLine = (text) => {
-      const hits = lines
-        .map((line, index) => (line.trim() === text ? index : -1))
-        .filter((index) => index >= 0)
-      return hits
+    // An earlier run of this patcher inserted a plain `termux-open <path>`; drop
+    // that block so the content-type aware form below can take its place.
+    const staleAt = lines.findIndex((line) => line.includes(`${NATIVE_MARKER}: `))
+    if (staleAt >= 0) {
+      let staleEnd = staleAt
+      while (staleEnd < lines.length && lines[staleEnd].trim() !== '}') staleEnd += 1
+      lines.splice(staleAt, staleEnd - staleAt + 1)
     }
+    const hitsOf = (text) =>
+      lines.map((line, index) => (line.trim() === text ? index : -1)).filter((index) => index >= 0)
     const throwLine = 'throw new Error(`native path opener is unsupported on ${platform}`);'
     const canLine = 'if (platform !== "linux") return false;'
-    const throwHits = findLine(throwLine)
-    const canHits = findLine(canLine)
+    const throwHits = hitsOf(throwLine)
+    const canHits = hitsOf(canLine)
     if (throwHits.length !== 1 || canHits.length !== 1) {
       problems.push(`open in app: anchors not unique in ${nativeCommandPath} (throw ${throwHits.length}, can ${canHits.length})`)
     } else {
@@ -407,23 +411,57 @@ if (existsSync(nativeCommandPath)) {
         return line.slice(0, line.length - line.trimStart().length)
       }
       const unitOf = (indent) => (indent.includes('\t') ? '\t' : '    ')
-      // Insert the android opener immediately before the unsupported-platform throw,
-      // then accept android in the capability probe.
       const throwIndent = indentOf(throwHits[0])
       const throwUnit = unitOf(throwIndent)
       lines.splice(
         throwHits[0],
         0,
         `${throwIndent}if (platform === "android") { /* ${NATIVE_MARKER}: Termux hands the path to an Android app. */`,
-        `${throwIndent}${throwUnit}await run("termux-open", [path], signal);`,
+        `${throwIndent}${throwUnit}const contentType = androidOpenContentType(path);`,
+        `${throwIndent}${throwUnit}await run("termux-open", contentType === void 0 ? [path] : ["--content-type", contentType, path], signal);`,
         `${throwIndent}${throwUnit}return;`,
         `${throwIndent}}`,
       )
-      const canIndex = canHits[0] < throwHits[0] ? canHits[0] : canHits[0] + 4
+      const canIndex = canHits[0] < throwHits[0] ? canHits[0] : canHits[0] + 5
       const canIndent = indentOf(canIndex)
       lines.splice(canIndex, 0, `${canIndent}if (platform === "android") return true; /* ${NATIVE_MARKER} */`)
-      writeFileSync(nativeCommandPath, lines.join('\n'))
-      console.log('open in app: android uses termux-open')
+      const helper = `/**
+* ${NATIVE_MARKER}_TYPE: the content type to hand termux-open on Android.
+*
+* Left to itself, termux-open asks Android's MimeTypeMap for the extension, and
+* formats it does not know — .yaml among them — degrade to the wildcard type.
+* The chooser then lists apps that merely accept anything and cannot read the
+* shared URI, which looks like "none of these work". Naming the type up front
+* narrows the chooser to apps that can actually open the file.
+* @param path - the path about to be handed to termux-open.
+* @returns a MIME type, or undefined to let termux-open derive one.
+*/
+function androidOpenContentType(path) {
+        const dot = path.lastIndexOf(".");
+        const extension = dot < 0 ? "" : path.slice(dot).toLowerCase();
+        const text = {
+                ".txt": 1, ".text": 1, ".log": 1, ".md": 1, ".markdown": 1, ".csv": 1, ".tsv": 1,
+                ".json": 1, ".jsonc": 1, ".yaml": 1, ".yml": 1, ".toml": 1, ".ini": 1, ".cfg": 1,
+                ".conf": 1, ".env": 1, ".properties": 1, ".sh": 1, ".bash": 1, ".zsh": 1, ".fish": 1,
+                ".py": 1, ".rb": 1, ".pl": 1, ".lua": 1, ".php": 1, ".go": 1, ".rs": 1, ".swift": 1,
+                ".c": 1, ".h": 1, ".cc": 1, ".cpp": 1, ".hpp": 1, ".cs": 1, ".java": 1, ".kt": 1,
+                ".js": 1, ".mjs": 1, ".cjs": 1, ".ts": 1, ".tsx": 1, ".jsx": 1, ".vue": 1,
+                ".css": 1, ".scss": 1, ".less": 1, ".xml": 1, ".sql": 1, ".diff": 1, ".patch": 1
+        };
+        if (text[extension] === 1) return "text/plain";
+        const exact = {
+                ".html": "text/html", ".htm": "text/html", ".svg": "image/svg+xml",
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+                ".pdf": "application/pdf", ".zip": "application/zip", ".gz": "application/gzip",
+                ".tar": "application/x-tar", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+                ".mp4": "video/mp4", ".webm": "video/webm"
+        };
+        return exact[extension];
+}
+`
+      writeFileSync(nativeCommandPath, `${lines.join('\n')}\n${helper}`)
+      console.log('open in app: android uses termux-open with an explicit content type')
     }
   }
 } else {

@@ -147,7 +147,7 @@ this host; refusing to run the command unconfined.
 | 5 | 发图片时提示词被拒：`prompt rejected (session/agent-busy)` | 附件落盘前会把**每一级祖先目录**都 fsync 到文件系统根 `/`，以保证崩溃后目录项不丢。安卓的 `/data/data` 权限是 `0771`——app 可穿越但**不可 `open()`**，于是整条发图链路抛 `EACCES: permission denied, open '/data/data'`。被拒的提示词不留痕，界面只显示那个空洞的外壳错误码 | 祖先目录打不开（`EACCES`/`EPERM`）时跳过：打不开的系统目录本就不是 app 该同步的（它是系统早就建好并落盘的），而附件自己创建的每一级目录仍照常同步。Linux/macOS 行为不变（那边 `open()` 本来就成功） |
 | 6 | `glob`/`grep` 工具报 `SearchError: SEARCH_FAILED`，附 `ripgrep launch failed` | `dsh-tool-fs-search` 直接 spawn `@vscode/ripgrep` 选出的**平台构建**，而该包只发布 macOS / Linux / Windows——没有 `@vscode/ripgrep-android-arm64`，导入即抛 `Could not find ...`，于是每次搜索都启动失败 | 先照旧尝试随包二进制；不可用时回退到 PATH 里的 `rg`（Termux 的 `pkg install ripgrep` 就是安卓原生构建）。有平台构建的环境完全不受影响 |
 | 7 | 手机上**设置页面右侧被挤扁** | 设置外壳是桌面弹窗：`width:800px`（被 `calc(100vw - 48px)` 兜住）+ 固定 `188px` 的导航列并排，**且该包没有任何媒体查询**。412px 手机上弹窗仅约 364px，内容区只剩约 176px | 注入一段 `@media (max-width: 720px)` 覆盖：导航列改为**顶部横向可滚动条**、标题隐藏、内容区占满宽度，弹窗边距收紧并用 `100dvh` 以便软键盘弹出时仍可达。类名是 CSS Module 哈希，脚本每次**从已安装的 bundle 里现读**并就地重写该样式块；选择器双写类名以稳压插件运行时注入的规则 |
-| 8 | 设置里**点"打开配置文件"没反应/报错** | `dsh-native-command` 把路径交给平台自己的启动器，只声明了 darwin（`open`）/ win32（`Invoke-Item`）/ linux（`xdg-open`）。安卓上 `canOpenNativePath()` 返回 `false`（按钮被判定为不可用），`openNativePath()` 直接抛 `native path opener is unsupported on android` | 给该模块补上 android 分支，用 Termux 自带的 `termux-open`（"Open a file or URL in an external app"）。其余三个平台行为不变；"在文件管理器里显示"**保持不支持**——安卓没有对应语义，界面会退化成显示路径文本，而不是给一个必然失败的按钮 |
+| 8 | 设置里**点"打开配置文件"没反应/报错**；修好后**选择器里的应用又都打不开** | `dsh-native-command` 把路径交给平台自己的启动器，只声明了 darwin（`open`）/ win32（`Invoke-Item`）/ linux（`xdg-open`）。安卓上 `canOpenNativePath()` 返回 `false`（按钮被判定为不可用），`openNativePath()` 直接抛 `native path opener is unsupported on android`。而就算调起 `termux-open`，不指定类型时它靠 Android 的 MimeTypeMap 从扩展名猜，`.yaml` 这类没有条目会退化成**通配类型**，选择器里于是全是"什么都能收、却读不了"的应用 | 给该模块补上 android 分支，用 Termux 自带的 `termux-open`，并**按扩展名显式指定 `--content-type`**（`.yaml`/`.json`/`.md`/… → `text/plain`，图片/PDF/HTML 给各自类型，未知扩展名不干预）。其余三个平台行为不变；"在文件管理器里显示"**保持不支持**——安卓没有对应语义，界面会退化成显示路径文本，而不是给一个必然失败的按钮 |
 
 `android-fix.mjs` 触及的文件：
 
@@ -193,6 +193,7 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 - **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
 - **手机竖屏只修了设置弹窗**（补丁 7）。主界面仍有 56px 的折叠侧栏轨道，右侧面板、对话区在窄屏下未做适配；上游文档自己把"窗口极窄时中间栏可能不足 400px"列为已知限制。补丁 7 的断点是脚本里的 `max-width: 720px`，觉得该换宽度就改这个值（改完重跑脚本即可，样式块会就地重写）。
 - **"在文件管理器里显示"在安卓上仍不可用**（补丁 8 只补了"用外部应用打开"）。安卓没有"在文件管理器里定位某个文件"的对应动作，所以这类入口会退化为展示路径文本。
+- **"用外部应用打开"在安卓上只能只读分享**：Termux 的家目录是 app 私有的，`termux-open` 通过 content URI 把文件交给目标应用，对方只拿到一次性**读**权限——能看，但在原位保存会失败。要真正编辑配置，用界面里的设置页（编辑的就是同一份配置）、或在 Termux 里 `nano ~/.dsh/settings.yaml`；想用安卓编辑器，就先复制到 `~/storage/shared`（需 `termux-setup-storage`）改完再复制回来。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
 - 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
 
