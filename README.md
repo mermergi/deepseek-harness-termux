@@ -184,24 +184,12 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 - dsh `0.1.5-rc.1` 与 `0.1.6-alpha.1` 两版都装得上、补得齐、跑得通（升级到后者后逐项复验）；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
-- **真机发图跑通**：一张 `jpeg 1156x2510` 经 `sharp` 规范化后落盘，附件库里生成了内容寻址的原图对象（文件名与其内容 sha256 一致）与给模型用的缩放版（`543x1178`）；
-- **`glob`/`grep` 工具跑通**：搜索结果的匹配数与系统 `rg` 逐个文件一致（不是"没报错"，而是结果对得上）；
-- 原生模块 `koffi`（官方 `@koromix/koffi-android-arm64` 预编译）与 `node-pty`（本机现编出 `pty.node`，能开出真 PTY）均加载正常。
-
 **已知限制**：
 
-- **附件/图片链路**：发图已跑通（见上）。注意走 WASM 的 `sharp` 比原生慢；补丁 5 会让"祖先目录 fsync"在安卓上止步于 app 无法打开的那一层，因此极端掉电场景下，`~/.dsh` 以上系统目录的目录项同步由系统负责。
-- **flock 退化为单进程放行**：不要同时运行两个 dsh 实例写同一个会话。
-- **手机竖屏只修了设置弹窗**（补丁 7）。主界面仍有 56px 的折叠侧栏轨道，右侧面板、对话区在窄屏下未做适配；上游文档自己把"窗口极窄时中间栏可能不足 400px"列为已知限制。补丁 7 的断点是脚本里的 `max-width: 720px`，觉得该换宽度就改这个值（改完重跑脚本即可，样式块会就地重写）。
-- **"用外部应用打开"在安卓上只能只读分享**，第三方应用无法原位保存；"在文件管理器里显示"没有安卓对应语义，保持不支持。要编辑配置请用界面里的设置页，或 Termux 里的 `nano ~/.dsh/settings.yaml`。
+
+- 要编辑配置请用界面里的设置页，或 Termux 里的 `nano ~/.dsh/settings.yaml`。
 - 会话数据在 `~/.dsh/sessions/`，注意其中的对话内容会落盘。
 - 本仓库以 [MIT 许可](LICENSE) 发布（与 dsh 上游一致）。
-
-### 排障：`prompt rejected (session/agent-busy)`
-
-界面上的这个错误是**外壳错误**：dsh 把提示词准入阶段的一切非预期异常都裹成这个码，真正的原因（`reason` 字段）只在**运行 dsh 的那个终端**里打印，界面不显示；被拒的提示词也不写入会话日志，事后无从追溯。
-
-排查办法：在 `node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js` 里找到抛出 `"session/agent-busy"` 的那一行，在它前面插一句 `console.error(error)` 重启服务即可看到真实原因（补丁 5 就是这样定位出来的）。
 
 上游文档：<https://deepseek-harness.github.io/deepseek-harness/> ·
 <https://github.com/deepseek-ai/deepseek-harness>（MIT）
