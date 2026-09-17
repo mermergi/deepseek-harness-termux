@@ -12,6 +12,7 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [做成桌面一键启动](#做成桌面一键启动)
+- [PhoneUse 插件（可选）](#phoneuse-插件可选)
 - [安全提示（务必读）](#安全提示务必读)
 - [补丁清单](#补丁清单)
 - [重装或升级之后](#重装或升级之后)
@@ -139,6 +140,20 @@ chmod +x ~/.shortcuts/tasks/start_dsh.sh
 - 脚本会在启动前自动重跑补丁，所以升级/重装 dsh 后照样能一键起。
 - 再次点按时：端口已被占用就只打开浏览器。首次启动后浏览器会持有 30 天的登录 cookie，所以不需要再管 token；脚本本身也不会重复启动第二个实例。
 - 安装目录不在 `~/dsh` 时：改脚本顶部的 `DSH_DIR`，或用 `DSH_DIR=/your/path` 覆盖。
+
+## PhoneUse 插件（可选）
+
+一个 agent preset：让单个会话拿到八个 `phone_*` 工具，直接操作这台手机 —— `phone_screenshot`（截屏**作为图像**交给模型）、`phone_ui`（无障碍树 + 真实像素坐标）、`phone_tap` / `phone_swipe` / `phone_key` / `phone_text`、`phone_app`、`phone_status`。全部经由 Termux 里连到 `127.0.0.1` 的 `adb`。
+
+```sh
+bash phone-use/install.sh
+```
+
+它把 shipped 的 `standard` preset 复制到 `~/.dsh/.agent-presets/phone-use/`，补上那一行组成，构建插件模块，最后自检。新建会话时选 **「标准模式 + PhoneUse」**，工具即生效。
+
+同一个 preset 还会把运行状态镜像到一条安卓通知上 —— 干活时是 `运行中 · phone_tap`，一轮结束变成 `已结束 · 等你指令`，并带一个跳回本 GUI 的按钮。这样"跑完没有"不用盯着浏览器。
+
+前置条件、重建方式与安全提示见 [`phone-use/README.md`](phone-use/README.md)。
 
 ## 安全提示（务必读）
 

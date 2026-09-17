@@ -12,6 +12,7 @@ dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) 
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Desktop one-tap launch](#desktop-one-tap-launch)
+- [PhoneUse plugin (optional)](#phoneuse-plugin-optional)
 - [Security notice (read this)](#security-notice-read-this)
 - [Patch list](#patch-list)
 - [After reinstalling or upgrading](#after-reinstalling-or-upgrading)
@@ -139,6 +140,20 @@ Then add a **Termux:Widget** widget to your home screen and tap `start_dsh`.
 - The script re-runs the patches before starting, so one tap keeps working after dsh is upgraded or reinstalled.
 - Tapping it again: if the port is already in use it only opens the browser. After the first launch the browser holds a 30-day login cookie, so the token stops mattering; the script never starts a second instance either.
 - If your install directory is not `~/dsh`: change `DSH_DIR` at the top of the script, or override it with `DSH_DIR=/your/path`.
+
+## PhoneUse plugin (optional)
+
+An agent preset that gives one session eight `phone_*` tools for driving this phone directly: `phone_screenshot` (the screen as an image the model can actually look at), `phone_ui` (the accessibility tree with real device-pixel tap coordinates), `phone_tap` / `phone_swipe` / `phone_key` / `phone_text`, `phone_app`, and `phone_status`. Everything runs through the Termux `adb` client paired to `127.0.0.1`.
+
+```sh
+bash phone-use/install.sh
+```
+
+It copies the shipped `standard` preset into `~/.dsh/.agent-presets/phone-use/`, adds one row, builds the plugin module and self-checks before finishing. Choose **「标准模式 + PhoneUse」** for a session and the tools are there.
+
+The same preset mirrors run status into a single Android notification — `运行中 · phone_tap` while it works, `已结束 · 等你指令` when a turn ends, plus a button back to this GUI — so the end of a run is visible without watching the browser.
+
+Prerequisites, the rebuild loop and the security caveat: [`phone-use/README.md`](phone-use/README.md).
 
 ## Security notice (read this)
 
