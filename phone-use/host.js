@@ -241,17 +241,69 @@ return {
       return result.stdout.text
     }
 
-    async function assertDevice(signal) {
-      const listing = await adbText('devices', { timeoutMs: 20000, signal })
-      if (!/\tdevice\b/.test(listing)) {
-        throw new Error(
-          'PhoneUse: no device is connected to adb, so the phone is out of reach.\n' +
-          listing.trim() +
-          '\nFix: enable Wireless debugging in Android settings, then reconnect this Termux adb client ' +
-          '(adb pair <ip:pairPort> with the pairing code, then adb connect 127.0.0.1:<port>). ' +
-          'Run phone_status to re-check.',
-        )
+    /**
+     * Find the wireless-debugging port again and reconnect.
+     *
+     * The adb link is the one thing that does not persist: Android re-rolls the
+     * port whenever wireless debugging is toggled or the device reboots, so
+     * yesterday's `adb connect 127.0.0.1:<port>` is dead. The daemon does listen
+     * on loopback, so the port is discoverable from Termux itself: blocking
+     * connects across the standard range with a 50 ms timeout, in a thread pool.
+     *
+     * The obvious-looking alternative — non-blocking connect + select in batches —
+     * is wrong here: it reported no listener at all while adb was demonstrably
+     * connected to one. (Technique taken from the `ui` script in
+     * ~/automation-attic, which is where it was first made to work.)
+     */
+    async function reconnect(signal) {
+      const scan = "python3 - <<'PY'\n" + [
+        'import socket',
+        'from concurrent.futures import ThreadPoolExecutor',
+        'def probe(p):',
+        '    s = socket.socket(); s.settimeout(0.05)',
+        '    try:',
+        '        s.connect(("127.0.0.1", p)); return p',
+        '    except OSError:',
+        '        return None',
+        '    finally:',
+        '        s.close()',
+        'with ThreadPoolExecutor(max_workers=600) as ex:',
+        '    print(" ".join(str(r) for r in ex.map(probe, range(30000, 50000)) if r))',
+      ].join('\n') + '\nPY'
+      const scanned = await bash(scan, { timeoutMs: 120000, signal })
+      const ports = scanned.stdout.text.trim().split(/\s+/).filter((value) => /^[0-9]+$/.test(value))
+      for (const port of ports) {
+        await adb('connect 127.0.0.1:' + port, { timeoutMs: 20000, signal })
+        const state = await adb('get-state', { timeoutMs: 20000, signal })
+        if (state.exitCode === 0 && state.stdout.text.trim() === 'device') {
+          return { port, ports }
+        }
+        await adb('disconnect 127.0.0.1:' + port, { timeoutMs: 20000, signal })
       }
+      return { port: null, ports }
+    }
+
+    /**
+     * Hard dependency for every action tool: a live device, reconnecting once by
+     * itself when the link dropped. Returns how it was found so a caller can say
+     * so out loud instead of silently succeeding on a link the user thinks is down.
+     */
+    async function assertDevice(signal) {
+      let listing = await adbText('devices', { timeoutMs: 20000, signal })
+      if (/\tdevice\b/.test(listing)) return { recovered: null }
+
+      const attempt = await reconnect(signal)
+      listing = await adbText('devices', { timeoutMs: 20000, signal })
+      if (/\tdevice\b/.test(listing)) return { recovered: attempt.port }
+
+      const why = attempt.ports.length === 0
+        ? 'its own port scan found no listener on 127.0.0.1:30000-49999, which normally means Wireless debugging is off'
+        : 'its own port scan found ' + attempt.ports.join(', ') + ', but adb connect did not take'
+      throw new Error(
+        'PhoneUse: no device is connected to adb, so the phone is out of reach.\n' + listing.trim() +
+        '\nPhoneUse already tried to reconnect by itself: ' + why + '.' +
+        '\nFix: open 开发者选项 → 无线调试, then call phone_status again — the port is found automatically.',
+      )
     }
 
     function shellCommand(inner, options) {
@@ -312,18 +364,27 @@ return {
 
     harness.registerTool(ctx, harness.defineTool({
       name: 'phone_status',
-      description: 'Report whether this Android phone is reachable through adb, plus model, screen size, screen wake state, and the foreground app. Call it first, and after any phone_* failure, to tell "the phone is unreachable" apart from "the action failed".',
+      description: 'Report whether this Android phone is reachable through adb, plus model, screen size, screen wake state, and the foreground app. When the link is down it first rescans for the wireless-debugging port and reconnects on its own, so a stale port is not a dead end. Call it first, and after any phone_* failure, to tell "the phone is unreachable" apart from "the action failed".',
       parameters: {},
       output: { schema: { type: 'json' }, render: (_args, value) => textBlocks(value) },
       isConcurrencySafe: () => true,
       async execute(_args, exec) {
-        const listing = await adbText('devices', { timeoutMs: 20000, signal: exec.signal })
+        let listing = await adbText('devices', { timeoutMs: 20000, signal: exec.signal })
+        let recovered = null
         if (!/\tdevice\b/.test(listing)) {
-          return {
-            connected: false,
-            adb_devices: listing.trim(),
-            hint: 'Enable Wireless debugging, then `adb pair` + `adb connect 127.0.0.1:<port>` from Termux.',
+          const attempt = await reconnect(exec.signal)
+          listing = await adbText('devices', { timeoutMs: 20000, signal: exec.signal })
+          if (!/\tdevice\b/.test(listing)) {
+            return {
+              connected: false,
+              adb_devices: listing.trim(),
+              port_scan: attempt.ports.length === 0
+                ? 'no listener on 127.0.0.1:30000-49999 — Wireless debugging looks off (Android turns it off on reboot)'
+                : 'found ' + attempt.ports.join(', ') + ', but connecting did not take',
+              hint: 'Open 开发者选项 → 无线调试, then call phone_status again: the port is discovered automatically.',
+            }
           }
+          recovered = attempt.port
         }
         const probe = [
           'echo "MODEL=$(getprop ro.product.model)"',
@@ -341,6 +402,7 @@ return {
         }
         return {
           connected: true,
+          ...(recovered === null ? {} : { reconnected_via_port_scan: recovered }),
           model: fields.MODEL === undefined ? 'unknown' : fields.MODEL,
           android_release: fields.RELEASE === undefined ? 'unknown' : fields.RELEASE,
           screen: fields.SIZE === undefined ? 'unknown' : fields.SIZE.replace('Physical size: ', ''),

@@ -97,8 +97,30 @@ console.log('tools:  ' + [...tools.keys()].join(', ') + '\n')
 const exec = { signal: undefined }
 const call = (name, args) => tools.get(name).execute(args ?? {}, exec)
 
+// ── 0. self-healing link: drop adb, then let the tool find the port again ───
+{
+  const attached = execSync('adb devices', { encoding: 'utf8', shell: BASH })
+    .split('\n').map((line) => line.trim()).find((line) => line.endsWith('\tdevice'))
+  if (attached === undefined) {
+    check('phone_status reconnects a dropped link', false, 'no device attached to drop')
+  } else {
+    const serial = attached.split('\t')[0]
+    execSync('adb disconnect ' + serial, { encoding: 'utf8', shell: BASH })
+    const started = Date.now()
+    const healed = await call('phone_status')
+    check(
+      'phone_status reconnects a dropped link',
+      healed.connected === true,
+      'dropped ' + serial + ' → found port ' + String(healed.reconnected_via_port_scan) + ' in ' + String(Date.now() - started) + 'ms',
+    )
+  }
+}
+
 // ── 1. status ───────────────────────────────────────────────────────────────
 const status = await call('phone_status')
+// Whatever the person had in front is what this run must give back at the end —
+// hardcoding a browser was wrong the moment the GUI moved into an app.
+const initialPackage = (String(status.foreground).match(/\s([A-Za-z0-9_.]+)\//) ?? [])[1] ?? 'mark.via'
 check('phone_status connected', status.connected === true, 'model=' + String(status.model) + ' screen=' + String(status.screen) + ' foreground=' + String(status.foreground).slice(0, 40))
 
 // ── 2. ui ───────────────────────────────────────────────────────────────────
@@ -163,15 +185,15 @@ try {
 }
 check('phone_screenshot produces a PNG', shotOk, shotDetail)
 
-// ── 7. key + restore ────────────────────────────────────────────────────────
+// ── 7. key + restore whatever was in front before the run ──────────────────
 try {
   await call('phone_key', { key: 'BACK' })
   await call('phone_app', { action: 'stop', target: 'com.android.settings' })
-  await call('phone_app', { action: 'start', target: 'mark.via' })
+  await call('phone_app', { action: 'start', target: initialPackage })
   const after = await call('phone_app', { action: 'current' })
-  check('restored browser to front', String(after.foreground).includes('mark.via'), String(after.foreground).slice(0, 50))
+  check('restored ' + initialPackage + ' to front', String(after.foreground).includes(initialPackage), String(after.foreground).slice(0, 60))
 } catch (error) {
-  check('restored browser to front', false, String(error.message).slice(0, 90))
+  check('restored ' + initialPackage + ' to front', false, String(error.message).slice(0, 90))
 }
 
 const failed = results.filter((entry) => !entry.ok)
