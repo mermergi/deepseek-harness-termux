@@ -14,7 +14,7 @@
 | `phone_tap` | 按坐标点，或**按文字**点（自动 dump 后取该元素中心） |
 | `phone_swipe` | 滑动 / 甩动 |
 | `phone_key` | 按键（`BACK` `HOME` `APP_SWITCH` `ENTER` `DEL` `VOLUME_*` `DPAD_*` …） |
-| `phone_text` | 输入文本：ASCII 走 `input text`；非 ASCII 走剪贴板 + `PASTE`（需 Termux:API） |
+| `phone_text` | 输入文本：走剪贴板 + `PASTE` 绕过输入法（需 Termux:API；**会替换你的剪贴板**），没装 API 时才退回 `input text` |
 | `phone_app` | 前台应用 / 包列表 / 启动 / 停止 |
 
 另有一条**状态通知通道**（不是工具）：agent 每次调用 `phone_*`，就把 `运行中 · phone_xxx` 推到同一条通知上（固定 `--id`，原地更新不堆叠）；一轮结束变成 `已结束 · HH:MM:SS · 等你指令`，并带一个「打开会话」按钮一跳到 GUI。它解决的正是"agent 在别的 app 里操作时，你不知道它跑完没有、还得自己切回来"。
@@ -57,10 +57,15 @@ bash phone-use/install.sh
 
 ```sh
 node phone-use/build.mjs --out ~/.dsh/.agent-presets/phone-use/plugin
-node phone-use/smoke.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js
+node phone-use/smoke.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js     # 离线
+node phone-use/live-test.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js # 真机（需已连 adb）
 ```
 
-`smoke.mjs` 在离线环境里真正加载模块、跑一遍 `apply`、断言 8 个工具和 2 个监听器都注册了，并用 `bash -n` 校验它将要发出的通知命令。**挂载时才报错**是最糟的时机（那正是人要开新会话的时候），这里提前挡掉。
+`smoke.mjs` 在离线环境里加载模块、跑一遍 `apply`、断言 8 个工具和 2 个监听器都注册了，**并且把 8 个工具各执行一次**（喂固定的 shell 输出），再用 `bash -n` 校验它将要发出的通知命令。
+
+**注册成功不等于能跑**：一个指向已删变量的残留引用语法合法、`node --check` 通过、注册也没问题，只在你真去调用时才炸。这一遍执行就是为了挡住它。
+
+`live-test.mjs` 加载**同一份生成模块**，但把 `shell` 接成真的 bash —— 于是可以直接驱动手机跑完整流程（状态 → UI 树 → 按文字点击 → 打字并读回 → 截屏 → 还原浏览器），并逐项断言。
 
 > 生成物放在 preset 自己目录里（行名 `./plugin/index.js` 相对 preset 解析），preset 因此是自包含的、不怕重装 dsh。但生成物里的 `defineTool` 是**构建时探测到的绝对路径** —— 换了 dsh 安装目录要重新构建（`DSH_DIR=... node build.mjs`）。
 
@@ -80,12 +85,26 @@ node phone-use/smoke.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js
 
 ## 验证到什么程度
 
-在真机上逐项验过：
+两条自动化测试，都可以重跑：
 
-- `phone_status`、`phone_ui`（读到了真实的前台界面与元素坐标）、`phone_app start`；
-- `phone_screenshot` —— 图像确实进入了模型上下文（不是写了个文件就算数）；
-- `phone_tap` —— 按 UI 树坐标点 `WLAN` 之后，活动栈里出现 `com.android.settings/.Settings$WifiSettingsActivity` 且 `Resumed`，这是与"谁在前台"无关的持久证据；
-- `phone_text` 的转义 —— 用「假 adb + 假 input」把宿主 shell → adb → 设备 shell 两层完整模拟出来：含空格、引号、`$`、`;`、制表符的输入，设备端始终收到恰好两个 argv，没有被拆分或注入；
-- 组成用 `standingKeyFor()` 真实挂载校验过（`mounted OK`）。
+```sh
+node phone-use/smoke.mjs     <preset>/plugin/index.js   # 离线：加载 + 执行全部工具
+node phone-use/live-test.mjs <preset>/plugin/index.js   # 真机：驱动手机跑完整流程
+```
 
-**没验的**：装进 preset 之后，在一个真实会话里逐个调用。第一次用时跑一下 `phone_status` 看 `connected` 即可。
+`live-test.mjs` 最近一次的结果（7/7）：
+
+- `phone_status` —— 真实机型 / 屏幕 / 前台窗口；
+- `phone_ui` —— 列出带真实像素坐标的元素；
+- `phone_app start` —— 拉起设置；
+- `phone_tap` 按文字 —— 自己在树里找到「搜索系统设置项」并点中 (643,563)；
+- `phone_text` —— `route=clipboard + PASTE`，读回字段里确实出现了输入串（`#1 tap=(561,220) "phoneuse-ok" [EditText]`）；
+- `phone_screenshot` —— 生成 600x1302 的合法 PNG；
+- 结束后自动把浏览器带回前台。
+
+组成另外用 `standingKeyFor()` 做过真实挂载校验（`mounted OK`）。
+
+**两个只有真机才暴露的坑**，都已写进实现：
+
+1. **`input text` 在中文输入法下会静默丢字。** 实测 `input text 'phoneuse-ok'` 之后字段里只剩一个 `－`：字母被当成拼音合成丢掉了，`-` 被转成全角。所以 `phone_text` 的主路径改成剪贴板 + `PASTE`（绕开输入法），并做一次**读回校验**，把"敲了"和"落地了"分开报告。
+2. **注册成功 ≠ 能跑。** 一次重构删掉了某个变量的定义却漏删引用：语法合法、`node --check` 通过、注册也正常，只有真调用 `phone_ui` 时才抛 `ReferenceError`。现在 `smoke.mjs` 会执行每个工具，这类 bug 在提交前就会被挡下。

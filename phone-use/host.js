@@ -483,7 +483,6 @@ return {
         const head = 'foreground: ' + foreground + '\n' +
           (filter === '' ? '' : 'filter: "' + filter + '"\n') +
           'elements: ' + listed + (lines.length < listed ? ' (showing first ' + lines.length + ')' : '') + '\n' +
-          caution +
           'coordinates are real device pixels — tap them with phone_tap\n'
         return head + (lines.length === 0 ? '(no matching element)' : lines.join('\n'))
       },
@@ -566,30 +565,70 @@ return {
     }))
 
 
+    /**
+     * Best-effort read-back: does the focused window's tree show this text?
+     * `null` means the tree could not be read at all, and `false` is not proof the
+     * paste failed — password fields and some WebViews never expose their value.
+     */
+    async function textLanded(text, signal) {
+      try {
+        const screen = await dumpScreen(signal)
+        for (const node of screen.nodes) {
+          if (node.text.indexOf(text) !== -1) return true
+        }
+        return false
+      } catch (error) {
+        return null
+      }
+    }
+
     harness.registerTool(ctx, harness.defineTool({
       name: 'phone_text',
-      description: 'Type text into the focused field. ASCII goes through `input text`; non-ASCII (e.g. Chinese) is delivered by setting the device clipboard and sending PASTE, which needs the Termux:API app. Tap the field first so it has focus.',
+      description: 'Type text into the focused field (tap the field first). Text is delivered by setting the device clipboard and sending PASTE, which bypasses the on-screen keyboard entirely; without the Termux:API app it falls back to `input text`. The paste route replaces the device clipboard.',
       parameters: {
-        text: { type: 'string', required: true, description: 'The text to type. Use \\n for a newline only if the field accepts ENTER separately.' },
+        text: { type: 'string', required: true, description: 'The text to type.' },
       },
       output: { schema: { type: 'json' }, render: (_args, value) => textBlocks(value) },
       async execute(args, exec) {
         await assertDevice(exec.signal)
         const text = String(args.text)
-        if (/^[\x20-\x7E]*$/.test(text)) {
-          await shellText('input text ' + hostQuote(escapeInputText(text)), { timeoutMs: 30000, signal: exec.signal })
-          return { ok: true, typed: text, route: 'input text', note: 'Verify with phone_ui.' }
+        const signal = exec.signal
+
+        // Clipboard first, NOT `input text`. Injected key events travel through
+        // the active IME, and a composing keyboard swallows them: measured on
+        // this device, `input text 'phoneuse-ok'` left the field reading "－" —
+        // the letters became a discarded pinyin composition and only the hyphen
+        // survived, as full-width punctuation. A paste never enters the IME.
+        const probe = await bash('command -v termux-clipboard-set || printf ""', { timeoutMs: 15000, signal })
+        if (probe.stdout.text.trim() !== '') {
+          const copied = await bash('termux-clipboard-set ' + hostQuote(text), { timeoutMs: 20000, signal })
+          if (copied.exitCode !== 0) {
+            throw new Error('PhoneUse: termux-clipboard-set failed: ' + clip((copied.stderr.text || copied.stdout.text).trim(), 200) + ' (is the Termux:API app installed?)')
+          }
+          await shellText('input keyevent 279', { timeoutMs: 30000, signal })
+          const landed = await textLanded(text, signal)
+          return {
+            ok: true,
+            typed: text,
+            route: 'clipboard + PASTE',
+            clipboard_replaced: true,
+            landed_in_tree: landed,
+            note: landed === false
+              ? 'Not visible in the accessibility tree: normal for password fields and some WebViews, otherwise re-check the field with phone_ui.'
+              : 'Verify with phone_ui if it matters.',
+          }
         }
-        const api = await bash('command -v termux-clipboard-set || printf ""', { timeoutMs: 15000, signal: exec.signal })
-        if (api.stdout.text.trim() === '') {
-          throw new Error('PhoneUse: this text is not ASCII, and `input text` cannot type it. Install the Termux:API app (provides termux-clipboard-set) so PhoneUse can paste non-ASCII text, or type it with phone_key/ASCII only.')
+
+        if (!/^[\x20-\x7E]*$/.test(text)) {
+          throw new Error('PhoneUse: non-ASCII text needs the Termux:API app (termux-clipboard-set); `input text` cannot type it.')
         }
-        const copied = await bash('termux-clipboard-set ' + hostQuote(text), { timeoutMs: 20000, signal: exec.signal })
-        if (copied.exitCode !== 0) {
-          throw new Error('PhoneUse: termux-clipboard-set failed: ' + clip((copied.stderr.text || copied.stdout.text).trim(), 200) + ' (is the Termux:API app installed and is the field focused?)')
+        await shellText('input text ' + hostQuote(escapeInputText(text)), { timeoutMs: 30000, signal })
+        return {
+          ok: true,
+          typed: text,
+          route: 'input text',
+          warning: 'No Termux:API app, so this went through the on-screen IME; a composing keyboard can drop or transform characters. Check the field with phone_ui.',
         }
-        await shellText('input keyevent 279', { timeoutMs: 30000, signal: exec.signal })
-        return { ok: true, typed: text, route: 'clipboard + PASTE', note: 'Verify with phone_ui.' }
       },
     }))
 
