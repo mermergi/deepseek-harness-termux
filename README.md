@@ -58,7 +58,7 @@ curl -fsSL -o install.sh \
 bash install.sh --deps
 ```
 
-`install.sh` works through the following in order: check the Node version and the build toolchain → install dsh into `~/dsh` → add `@img/sharp-wasm32` → apply the compatibility patches → install `~/.shortcuts/start_dsh.sh`. **It is safe to re-run**: if it fails, fix the cause and run it again; steps that already succeeded are skipped.
+`install.sh` works through the following in order: check the Node version and the build toolchain → install dsh into `~/dsh` → add `@img/sharp-wasm32` → apply the compatibility patches → install the silent launcher at `~/.shortcuts/tasks/start_dsh.sh` (plus a visible-terminal copy at `~/dsh/start_dsh-terminal.sh`). **It is safe to re-run**: if it fails, fix the cause and run it again; steps that already succeeded are skipped.
 
 | Flag | Effect |
 |---|---|
@@ -123,14 +123,18 @@ It prints a URL carrying a token (by default `http://127.0.0.1:3080`) and opens 
 Option A already sets this up; for a manual install, add it:
 
 ```sh
-mkdir -p ~/.shortcuts
-curl -fsSL -o ~/.shortcuts/start_dsh.sh \
+mkdir -p ~/.shortcuts/tasks
+curl -fsSL -o ~/.shortcuts/tasks/start_dsh.sh \
   https://raw.githubusercontent.com/mermergi/deepseek-harness-termux/main/start_dsh.sh
-chmod +x ~/.shortcuts/start_dsh.sh
+chmod +x ~/.shortcuts/tasks/start_dsh.sh
 ```
 
-Then add a **Termux:Widget** widget to your home screen and tap `start_dsh.sh`.
+Then add a **Termux:Widget** widget to your home screen and tap `start_dsh`.
 
+**Why `tasks/`**: Termux:Widget opens a new terminal session for scripts at the **top level** of `~/.shortcuts/` (a window pops up on every tap); only scripts under `~/.shortcuts/tasks/` run in the background. A silent entry therefore has to live in `tasks/`.
+
+- Launching is **silent**: a tap only shows a Termux:API toast (`⏳ DSH 启动中` → `✅ DSH 已启动  `) and then the browser opens. For live output, run `~/dsh/start_dsh-terminal.sh` in a terminal.
+- The toast needs the Termux:API app; without it nothing breaks, you just lose the feedback.
 - The script's file name must be **ASCII**. A Chinese file name fails outright under Termux:Widget: `env: '<path>': No such file or directory`.
 - The script re-runs the patches before starting, so one tap keeps working after dsh is upgraded or reinstalled.
 - Tapping it again: if the port is already in use it only opens the browser. After the first launch the browser holds a 30-day login cookie, so the token stops mattering; the script never starts a second instance either.
@@ -182,7 +186,9 @@ node ~/dsh/android-fix.mjs
 
 When you launch through this repository's `start_dsh.sh`, that step happens automatically.
 
-dsh is in developer preview and upgrades may bring breaking changes. If the script reports something like `missing ...`, an anchor string in the newer code has changed and the patch needs adjusting against it; the script does not skip silently — it names the file that failed to match.
+One of those patches is a **client-bundle combo cache**: at startup dsh re-assembles every client bundle once per plugin-registration wave (measured here: 435 calls, ~10 s of an ~11 s boot), and the cache cuts a cold start from ~10.6 s to ~8 s. It only affects speed, never correctness, so it is best-effort: when an anchor has moved in newer code it prints one warning instead of blocking startup.
+
+dsh is in developer preview and upgrades may bring breaking changes. If the script reports something like `missing ...`, an anchor string in the newer code has changed and the patch needs adjusting against it; required patches do not skip silently — the script names the file that failed to match.
 
 ## Verification and notes
 

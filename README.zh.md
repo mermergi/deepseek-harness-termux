@@ -58,7 +58,7 @@ curl -fsSL -o install.sh \
 bash install.sh --deps
 ```
 
-`install.sh` 会依次完成：检查 Node 版本与编译工具链 → 把 dsh 装到 `~/dsh` → 补上 `@img/sharp-wasm32` → 打兼容补丁 → 装好 `~/.shortcuts/start_dsh.sh`。**可重复运行**：跑失败、修好原因后直接重跑，已完成的步骤会跳过。
+`install.sh` 会依次完成：检查 Node 版本与编译工具链 → 把 dsh 装到 `~/dsh` → 补上 `@img/sharp-wasm32` → 打兼容补丁 → 把静默启动脚本装到 `~/.shortcuts/tasks/start_dsh.sh`（另存一份可见终端版 `~/dsh/start_dsh-terminal.sh`）。**可重复运行**：跑失败、修好原因后直接重跑，已完成的步骤会跳过。
 
 | 参数 | 作用 |
 |---|---|
@@ -123,14 +123,18 @@ node ~/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js web
 用方式 A 装的已经自带这一步了；手动装的话补上：
 
 ```sh
-mkdir -p ~/.shortcuts
-curl -fsSL -o ~/.shortcuts/start_dsh.sh \
+mkdir -p ~/.shortcuts/tasks
+curl -fsSL -o ~/.shortcuts/tasks/start_dsh.sh \
   https://raw.githubusercontent.com/mermergi/deepseek-harness-termux/main/start_dsh.sh
-chmod +x ~/.shortcuts/start_dsh.sh
+chmod +x ~/.shortcuts/tasks/start_dsh.sh
 ```
 
-然后在桌面上添加 **Termux:Widget** 小组件，点 `start_dsh.sh` 即可。
+然后在桌面上添加 **Termux:Widget** 小组件，点 `start_dsh` 即可。
 
+**为什么放在 `tasks/` 子目录**：Termux:Widget 对 `~/.shortcuts/` **顶层**的脚本会新开一个终端会话（点一次弹一个窗口），只有 `~/.shortcuts/tasks/` 下的脚本才在后台执行。想要「点了不出终端窗口」就必须放 `tasks/`。
+
+- 启动是**静默**的：点一下只见 Termux:API 提示条（`⏳ DSH 启动中` → `✅ DSH 已启动`），随后浏览器自动打开。要看实时输出就在终端里跑 `~/dsh/start_dsh-terminal.sh`。
+- 提示条依赖 Termux:API 应用；没装也不报错，只是没有回执。
 - 脚本文件名必须是 **ASCII**。中文文件名在 Termux:Widget 下会直接失败：`env: '<path>': No such file or directory`。
 - 脚本会在启动前自动重跑补丁，所以升级/重装 dsh 后照样能一键起。
 - 再次点按时：端口已被占用就只打开浏览器。首次启动后浏览器会持有 30 天的登录 cookie，所以不需要再管 token；脚本本身也不会重复启动第二个实例。
@@ -182,7 +186,9 @@ node ~/dsh/android-fix.mjs
 
 用本仓库的 `start_dsh.sh` 启动时这步会自动完成。
 
-dsh 目前处于 developer preview，升级可能带来破坏性变更。如果脚本报 `missing ...` 之类，说明新版代码里的锚点字符串变了，需要对照新版调整补丁；脚本不会静默跳过，而是明确报出哪个文件没匹配上。
+补丁里有一个**客户端 bundle 组合缓存**：dsh 启动时每注册一批插件就会重新组装一次全部客户端 bundle（本机实测 435 次调用、约占启动 10 秒），缓存把冷启动从约 10.6 秒压到约 8 秒。它只影响速度、不影响正确性，因此是尽力而为的：新版代码锚点变了只打印一行警告，不会拦住启动。
+
+dsh 目前处于 developer preview，升级可能带来破坏性变更。如果脚本报 `missing ...` 之类，说明新版代码里的锚点字符串变了，需要对照新版调整补丁；必需补丁不会静默跳过，而是明确报出哪个文件没匹配上。
 
 ## 验证与说明
 

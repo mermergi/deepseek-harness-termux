@@ -103,8 +103,20 @@ if [ ! -f "$DIR/node_modules/node-pty/build/Release/pty.node" ] \
 fi
 
 # ── 4. 安装一键启动脚本 ───────────────────────────────────────
-SHORTCUT="$HOME/.shortcuts/start_dsh.sh"
-mkdir -p "$HOME/.shortcuts"
+# 静默入口必须放在 ~/.shortcuts/tasks/ 下：Termux:Widget 对 ~/.shortcuts/ 顶层的
+# 脚本会新开一个终端会话（看得见窗口），对 tasks/ 下的脚本才在后台执行。
+SHORTCUT="$HOME/.shortcuts/tasks/start_dsh.sh"
+LEGACY_SHORTCUT="$HOME/.shortcuts/start_dsh.sh"
+mkdir -p "$HOME/.shortcuts/tasks"
+
+# 旧版把入口装在 ~/.shortcuts/ 顶层：备份后移除，否则 widget 里会同时出现
+# 两个 start_dsh，其中顶层那个仍然会弹终端窗口。
+if [ -f "$LEGACY_SHORTCUT" ]; then
+    cp "$LEGACY_SHORTCUT" "$LEGACY_SHORTCUT.bak"
+    rm -f "$LEGACY_SHORTCUT"
+    warn "已移除旧的 $LEGACY_SHORTCUT（顶层脚本会让 widget 弹终端），备份为 start_dsh.sh.bak"
+fi
+
 if [ -f "$SHORTCUT" ] && ! cmp -s "$SELF_DIR/start_dsh.sh" "$SHORTCUT" 2>/dev/null; then
     cp "$SHORTCUT" "$SHORTCUT.bak"
     warn "已存在 $SHORTCUT，原文件备份为 start_dsh.sh.bak"
@@ -112,9 +124,15 @@ fi
 fetch start_dsh.sh "$SHORTCUT"
 chmod +x "$SHORTCUT"
 
+# 可见终端的版本装到 $DIR 下备用：widget 里不会出现它，需要看实时输出时手动跑
+fetch start_dsh-terminal.sh "$DIR/start_dsh-terminal.sh"
+chmod +x "$DIR/start_dsh-terminal.sh"
+
 if [ "$DIR" != "$HOME/dsh" ]; then
     # 启动脚本默认找 ~/dsh，自定义目录要写进去
-    sed -i "s|^DSH_DIR=.*|DSH_DIR=\"$DIR\"|" "$SHORTCUT"
+    for _script in "$SHORTCUT" "$DIR/start_dsh-terminal.sh"; do
+        sed -i "s|^DSH_DIR=.*|DSH_DIR=\"$DIR\"|" "$_script"
+    done
     say "已把启动脚本的 DSH_DIR 设为 $DIR"
 fi
 
@@ -122,9 +140,12 @@ fi
 say "完成（dsh $(node -p "require('$DIR/node_modules/@deepseek-ai/dsh/package.json').version")）"
 cat <<EOF
 
-  启动：bash ~/.shortcuts/start_dsh.sh
-       或在桌面添加 Termux:Widget 小组件后点 start_dsh.sh
+  启动：桌面 Termux:Widget 小组件里点 start_dsh（后台静默启动，不弹终端）
+       或在终端里：bash ~/.shortcuts/tasks/start_dsh.sh
        （Web UI 默认在 http://127.0.0.1:3080）
+
+  想看实时日志/在终端里跑：bash $DIR/start_dsh-terminal.sh
+  启动器日志：tail -30 "\$TMPDIR/dsh_launcher.log"
 
   首次使用：进入界面后到 Settings → Models 填一次 DeepSeek API key
 

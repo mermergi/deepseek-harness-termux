@@ -447,6 +447,65 @@ function androidOpenContentType(path) {
   problems.push(`open in app: ${nativeCommandPath} missing`)
 }
 
+// client-modules: memoize per-record combo artifacts. The graph is recomposed
+// once per plugin-registration wave at startup, so without a cache every wave
+// re-assembles every individual client bundle (measured: 435 builds / ~10 s of
+// an ~11 s boot on this phone). A per-record artifact is pure in
+// (entry.id, revision) and `rebuilt()` allocates a new revision on content
+// change, so the cache can never serve stale bytes. Best effort on purpose: a
+// missing anchor only costs boot time, it must never block startup.
+const clientModulesPath = join(nodeModules, '@deepseek-ai', 'dsh-client-modules', 'lib', 'index.js')
+if (existsSync(clientModulesPath)) {
+  const source = readFileSync(clientModulesPath, 'utf8')
+  if (source.includes('ANDROID_BOOT_CACHE')) {
+    // already patched
+  } else {
+    const anchor = '/** Concatenate one or more factory registrations and compose their maps as indexed sections. */'
+    const head = 'function buildCombo(records, revision) {\n\tlet source = "";'
+    const tail = '\tconst sourceMapUrl = comboUrl(entries, rev, true);\n\treturn {\n\t\turl,\n\t\trev,\n\t\tentries,\n\t\tscript: comboScript(source, sourceMapUrl),\n\t\tsourceMap,\n\t\tsourceMapUrl\n\t};\n}'
+    if (source.includes(anchor) && source.includes(head) && source.includes(tail)) {
+      const cacheHeader = `/**
+* Per-record artifacts are pure in \`(entry.id, revision)\`: the same pair always
+* rebuilds the same bytes, and \`rebuilt()\` allocates a new revision whenever a
+* bundle's content changes. The graph is recomposed once per plugin-registration
+* wave at startup, so every wave otherwise re-assembles every individual bundle
+* (435 builds; ~10 s on a phone). ANDROID_BOOT_CACHE
+*/
+const singleComboCache = /* @__PURE__ */ new Map();
+const SINGLE_COMBO_CACHE_LIMIT = 256;
+`
+      const patchedHead = `function buildCombo(records, revision) {
+	const comboCacheKey = revision !== void 0 && records.length === 1 ? \`\${records[0].entry.id}@\${revision}\` : void 0;
+	if (comboCacheKey !== void 0) {
+		const comboCacheHit = singleComboCache.get(comboCacheKey);
+		if (comboCacheHit !== void 0) return comboCacheHit;
+	}
+	let source = "";`
+      const patchedTail = `	const sourceMapUrl = comboUrl(entries, rev, true);
+	const artifact = {
+		url,
+		rev,
+		entries,
+		script: comboScript(source, sourceMapUrl),
+		sourceMap,
+		sourceMapUrl
+	};
+	if (comboCacheKey !== void 0) {
+		if (singleComboCache.size >= SINGLE_COMBO_CACHE_LIMIT) singleComboCache.delete(singleComboCache.keys().next().value);
+		singleComboCache.set(comboCacheKey, artifact);
+	}
+	return artifact;
+}`
+      writeFileSync(clientModulesPath, source.replace(anchor, `${cacheHeader}${anchor}`).replace(head, patchedHead).replace(tail, patchedTail))
+      console.log('client-modules: per-record combo cache installed (boot ~2.6 s faster)')
+    } else {
+      console.warn('client-modules: combo cache anchor missing; skipping (boot stays slower)')
+    }
+  }
+} else {
+  console.warn(`client-modules: ${clientModulesPath} missing; skipping combo cache`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
