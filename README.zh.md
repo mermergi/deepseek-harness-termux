@@ -12,6 +12,7 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [做成桌面一键启动](#做成桌面一键启动)
+- [做成安卓 App](#做成安卓-app可选)
 - [PhoneUse 插件（可选）](#phoneuse-插件可选)
 - [安全提示（务必读）](#安全提示务必读)
 - [补丁清单](#补丁清单)
@@ -140,6 +141,28 @@ chmod +x ~/.shortcuts/tasks/start_dsh.sh
 - 脚本会在启动前自动重跑补丁，所以升级/重装 dsh 后照样能一键起。
 - 再次点按时：端口已被占用就只打开浏览器。首次启动后浏览器会持有 30 天的登录 cookie，所以不需要再管 token；脚本本身也不会重复启动第二个实例。
 - 安装目录不在 `~/dsh` 时：改脚本顶部的 `DSH_DIR`，或用 `DSH_DIR=/your/path` 覆盖。
+
+## 做成安卓 App（可选）
+
+不想在浏览器里用了就装 [`android-app/`](android-app/README.zh.md)——一个自签名 APK，
+在这台手机上用 `aapt2` + `javac` + `d8` 本地编译，不需要电脑和 Android Studio：
+
+```sh
+bash android-app/install.sh                                  # Termux 那一半
+bash android-app/tools/build.sh --install                    # 编译 + 丢给系统安装器
+```
+
+- **桌面图标、全屏、没有地址栏**：WebView 壳，返回键先在页面内后退。
+- **点图标自动起服务**：通过 Termux 的 `RUN_COMMAND` 调 `~/.dsh-app/bridge.sh`，
+  需要把 `termux.properties` 里的 `allow-external-apps` 打开（`install.sh` 会做）。
+- **免登录**：握手拿到 `?token=` 地址后换成 30 天 cookie，之后走快路径完全不碰 Termux。
+- **顺手的两个小功能**：页面顶部下拉刷新；切到别的 App 时有悬浮球显示 `工作中 / 空闲 / 服务已停止`，
+  手柄永远贴在左或右边缘（20×52dp 半椭圆，贴右边像 `(`、贴左边像 `)`），用颜色区分状态；
+  上下拖动移动位置，拖过屏幕中线翻到另一边。
+  状态不是猜的——它读会话日志里最后一个 `turn/start` / `turn/end`，所以等模型和长工具调用都不会误判。
+- **和这个脚本共用日志**：都在 `~/.dsh-app/`。`start_dsh.sh` 的日志路径已从 `$TMPDIR`
+  改到这里——`$TMPDIR` 会被 Termux 清空，而正在跑的 dsh 还在往那个已删除的 inode 里写，
+  token 会凭空消失（详见 [android-app/README.zh.md](android-app/README.zh.md) 里那节）。
 
 ## PhoneUse 插件（可选）
 

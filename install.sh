@@ -145,7 +145,8 @@ cat <<EOF
        （Web UI 默认在 http://127.0.0.1:3080）
 
   想看实时日志/在终端里跑：bash $DIR/start_dsh-terminal.sh
-  启动器日志：tail -30 "\$TMPDIR/dsh_launcher.log"
+  启动器日志：tail -30 "\$HOME/.dsh-app/launcher.log"
+             （服务自身输出：\$HOME/.dsh-app/server.log）
 
   首次使用：进入界面后到 Settings → Models 填一次 DeepSeek API key
 

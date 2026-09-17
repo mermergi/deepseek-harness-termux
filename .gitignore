@@ -2,3 +2,12 @@ npm/android-fix.mjs
 *.tgz
 npm/
 phone-use/dsh-plugin-phone-use/
+
+# android-app: build outputs, the 27 MB Android platform stub, and the signing key are all
+# machine-local. The key is deliberately NOT published: anyone holding it could sign an APK that
+# installs as an update over this one. A fresh clone simply generates its own key on first build,
+# which only costs the ability to update over an existing install (uninstall + reinstall instead).
+android-app/out/
+android-app/tools/android.jar
+android-app/tools/icon-preview.png
+android-app/keystore.jks

@@ -5,7 +5,12 @@
 # 放在 ~/.shortcuts/tasks/ 下，所以不会弹终端窗口，只用提示条告知结果。
 # 已在跑 → 直接打开浏览器；没在跑 → 后台拉起服务，就绪后打开浏览器。
 #
-# 日志：tail -30 "$TMPDIR/dsh_launcher.log"（服务自身输出：$TMPDIR/dsh_web.log）
+# 日志：tail -30 "$HOME/.dsh-app/launcher.log"（服务自身输出：$HOME/.dsh-app/server.log）
+#
+# 日志故意不放 $TMPDIR：Termux 重启 App 进程时会清空 $PREFIX/tmp，而已经跑起来的
+# dsh 还持有那个 inode（`... (deleted)`），于是进程活着、日志却从磁盘上消失——
+# 而日志里那行带 token 的地址是它唯一的外部副本，cookie 过期后就再也登不进去。
+# DSH 安卓 App 拉起服务时用的是同一个路径，两边可以互相复用。
 
 set -u
 
@@ -18,9 +23,10 @@ command -v node >/dev/null 2>&1 || export PATH="${PREFIX:-/data/data/com.termux/
 DSH_DIR="${DSH_DIR:-$HOME/dsh}"
 PORT="${DSH_PORT:-3080}"
 URL="http://127.0.0.1:$PORT/"
-TMP="${TMPDIR:-${PREFIX:-/data/data/com.termux/files/usr}/tmp}"
-LOG="$TMP/dsh_launcher.log"
-SERVER_LOG="$TMP/dsh_web.log"
+STATE_DIR="${DSH_STATE_DIR:-$HOME/.dsh-app}"
+mkdir -p "$STATE_DIR"
+LOG="$STATE_DIR/launcher.log"
+SERVER_LOG="$STATE_DIR/server.log"
 
 port_open() { (echo >/dev/tcp/127.0.0.1/$PORT) 2>/dev/null; }
 

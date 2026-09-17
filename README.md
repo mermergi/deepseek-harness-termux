@@ -12,6 +12,7 @@ dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) 
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Desktop one-tap launch](#desktop-one-tap-launch)
+- [Native Android app](#native-android-app-optional)
 - [PhoneUse plugin (optional)](#phoneuse-plugin-optional)
 - [Security notice (read this)](#security-notice-read-this)
 - [Patch list](#patch-list)
@@ -140,6 +141,33 @@ Then add a **Termux:Widget** widget to your home screen and tap `start_dsh`.
 - The script re-runs the patches before starting, so one tap keeps working after dsh is upgraded or reinstalled.
 - Tapping it again: if the port is already in use it only opens the browser. After the first launch the browser holds a 30-day login cookie, so the token stops mattering; the script never starts a second instance either.
 - If your install directory is not `~/dsh`: change `DSH_DIR` at the top of the script, or override it with `DSH_DIR=/your/path`.
+
+## Native Android app (optional)
+
+If you would rather not use a browser, install [`android-app/`](android-app/README.md) — a
+self-signed APK built **on the phone itself** with `aapt2` + `javac` + `d8`, no PC and no
+Android Studio required:
+
+```sh
+bash android-app/install.sh                                  # the Termux half
+bash android-app/tools/build.sh --install                    # build + hand to the installer
+```
+
+- **Home-screen icon, full screen, no address bar**: a WebView shell; Back navigates the page
+  first and only then leaves the app.
+- **One tap starts the server**: it drives `~/.dsh-app/bridge.sh` through Termux's
+  `RUN_COMMAND`, which needs `allow-external-apps` in `termux.properties` (`install.sh` does it).
+- **No repeated login**: the hand-off hands over a `?token=` URL, which is exchanged for a 30-day
+  cookie; later launches take a fast path that never touches Termux.
+- **Two small niceties**: pull-to-refresh at the top of the page, and a floating bubble that shows
+  `working / idle / server stopped` while you are in another app. The state is not guessed — it reads
+  the last `turn/start` / `turn/end` in the session log, so waiting on the model and long silent tool
+  calls are both classified correctly. Dragging the bubble to a screen edge snaps it into a slim
+  half-ellipse handle whose fill colour carries the state.
+- **Shared logs**: everything lives in `~/.dsh-app/`. `start_dsh.sh` no longer logs to `$TMPDIR` —
+  Termux wipes `$PREFIX/tmp`, while a running dsh keeps writing to the deleted inode, so the token
+  would vanish into thin air. See [android-app/README.md](android-app/README.md) for the full
+  write-up.
 
 ## PhoneUse plugin (optional)
 
