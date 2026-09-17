@@ -149,9 +149,12 @@ self-signed APK built **on the phone itself** with `aapt2` + `javac` + `d8`, no 
 Android Studio required:
 
 ```sh
-bash android-app/install.sh                                  # the Termux half
-bash android-app/tools/build.sh --install                    # build + hand to the installer
+bash android-app/install.sh                    # the Termux half (bridge scripts + allow-external-apps)
+termux-open android-app/prebuilt/dsh.apk       # install the committed APK; no build toolchain needed
 ```
+
+The APK is only the client (75 KB) — dsh itself lives in Termux (~271 MB), so a fresh phone sets
+up the Termux side first. See [android-app/README.md](android-app/README.md#installing-on-a-fresh-phone).
 
 - **Home-screen icon, full screen, no address bar**: a WebView shell; Back navigates the page
   first and only then leaves the app.

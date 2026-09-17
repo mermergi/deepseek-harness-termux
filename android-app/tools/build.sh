@@ -99,6 +99,14 @@ apksigner sign \
     --out "$out/dsh.apk" "$out/dsh-unsigned.apk"
 apksigner verify --print-certs "$out/dsh.apk" | head -4
 
+# Keep the committed copy in step. It is what lets a fresh phone install without the 237 MB
+# build toolchain (aapt2/apksigner/d8/openjdk-17), and having it tracked means `git status`
+# shows the moment the two drift apart.
+prebuilt_dir="$root/prebuilt"
+mkdir -p "$prebuilt_dir"
+cp "$out/dsh.apk" "$prebuilt_dir/dsh.apk"
+echo "prebuilt -> $prebuilt_dir/dsh.apk ($(wc -c <"$prebuilt_dir/dsh.apk") bytes)"
+
 ls -la "$out/dsh.apk"
 echo "OK -> $out/dsh.apk"
 

@@ -148,9 +148,14 @@ chmod +x ~/.shortcuts/tasks/start_dsh.sh
 在这台手机上用 `aapt2` + `javac` + `d8` 本地编译，不需要电脑和 Android Studio：
 
 ```sh
-bash android-app/install.sh                                  # Termux 那一半
-bash android-app/tools/build.sh --install                    # 编译 + 丢给系统安装器
+bash android-app/install.sh                    # Termux 那一半（bridge 脚本 + allow-external-apps）
+termux-open android-app/prebuilt/dsh.apk       # 装现成的 APK，不需要构建工具链
+# 想自己改代码重编才需要：pkg install aapt2 apksigner d8 openjdk-17
+# bash android-app/tools/build.sh --install
 ```
+
+**APK 只是客户端（75 KB），DSH 本体在 Termux 里（约 271 MB）**，所以一台新手机是
+「先装 Termux 侧、再装 APK」，完整顺序见 [android-app/README.zh.md](android-app/README.zh.md#在一台新手机上装)。
 
 - **桌面图标、全屏、没有地址栏**：WebView 壳，返回键先在页面内后退。
 - **点图标自动起服务**：通过 Termux 的 `RUN_COMMAND` 调 `~/.dsh-app/bridge.sh`，

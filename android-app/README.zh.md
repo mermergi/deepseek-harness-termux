@@ -309,6 +309,51 @@ bash ~/deepseek-harness-termux/android-app/tools/build.sh --install
 > `~/.dsh-app/env` 里放的是**给 dsh 服务的环境变量**，默认 `DSH_PERMISSION_MODE=danger-full-access`，
 > 和 `start_dsh.sh` 保持一致。想收回权限就改这里——代价是 shell 类工具会全部拒绝执行。
 
+### 在一台新手机上装
+
+**APK 只是客户端（75 KB），DSH 本体在 Termux 里（约 271 MB），所以新手机不能只装 APK。**
+完整顺序：
+
+```sh
+# 1. 装 Termux（F-Droid 版）和 Termux:API
+# 2. 拿到仓库
+pkg install -y git
+git clone https://github.com/mermergi/deepseek-harness-termux
+cd deepseek-harness-termux
+
+# 3. Termux 那一半：node/python/clang/ripgrep + dsh + 安卓补丁
+bash install.sh --deps
+
+# 4. App 那一半：bridge 脚本 + allow-external-apps
+bash android-app/install.sh
+
+# 5. 装 APK —— 用仓库里现成的，**不需要**构建工具链
+termux-open android-app/prebuilt/dsh.apk
+```
+
+然后打开 App，授权两个权限：RUN_COMMAND 的运行时弹窗、悬浮球的「显示在其他应用上层」。
+
+各部分体积，方便估算：
+
+| | 体积 |
+|---|---|
+| dsh 本体 + node_modules | 271 MB |
+| Node.js | 49 MB |
+| clang + python（node-pty 要现场编译） | 208 MB |
+| **`prebuilt/dsh.apk`** | **75 KB** |
+
+所以**不用**装 openjdk/d8/aapt2（237 MB）——只有想自己改代码重编时才需要：
+
+```sh
+pkg install -y aapt2 apksigner d8 openjdk-17
+bash android-app/tools/build.sh --install
+```
+
+`prebuilt/dsh.apk` 每次成功编译后由 `build.sh` 自动同步，所以它出现在 `git status` 里 =
+源码改过、预编译包已经跟上。仓库里**没有** `keystore.jks`（见 `.gitignore`），
+所以在别处 clone 出来第一次构建会生成一把新钥匙，那把钥匙签的包**不能**覆盖本机已装的这个。
+
+
 ## 安全边界
 
 多出来的攻击面有两个，都是本机的：

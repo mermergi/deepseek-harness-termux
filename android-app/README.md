@@ -58,6 +58,25 @@ bash android-app/tools/build.sh --install
 (syncing the hand-off secret from `MainActivity.java`, the single source of truth), and turn on
 `allow-external-apps` in `~/.termux/termux.properties` followed by `termux-reload-settings`.
 
+## Installing on a fresh phone
+
+The APK is only the client (75 KB); dsh itself lives in Termux (~271 MB). A new phone therefore
+cannot get by with the APK alone:
+
+```sh
+pkg install -y git
+git clone https://github.com/mermergi/deepseek-harness-termux
+cd deepseek-harness-termux
+bash install.sh --deps              # node/python/clang/ripgrep + dsh + the Android patches
+bash android-app/install.sh         # bridge scripts + allow-external-apps
+termux-open android-app/prebuilt/dsh.apk
+```
+
+The last step uses the committed `prebuilt/dsh.apk`, so the 237 MB build toolchain
+(openjdk-17/d8/aapt2) is only needed if you intend to rebuild from source. `build.sh` refreshes
+that committed copy after every successful build, so seeing it in `git status` means source and
+prebuilt have moved apart.
+
 ## Two traps worth knowing about
 
 **`$TMPDIR` gets wiped while the server is still writing to it.** Termux clears `$PREFIX/tmp`
