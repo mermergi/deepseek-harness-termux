@@ -694,6 +694,77 @@ if (existsSync(sidebarTooltipPath)) {
   problems.push(`sidebar tooltips: ${sidebarTooltipPath} missing`)
 }
 
+// 14. Restart button at the bottom of the General settings page.
+//
+// The app's own restart control lives on the splash screen and is shown only
+// when the boot fails, which is exactly when reaching it is hardest. The
+// settings page is where people look, so the button belongs there.
+//
+// The page is web content and cannot stop a Termux process by itself, so the
+// native shell exposes `window.dshNative.restartServer()` (MainActivity's
+// addJavascriptInterface, wired to the same beginBoot(true) path the splash
+// button uses). This patch adds the button that calls it.
+//
+// Rendered only when that bridge exists, so a desktop browser — where the
+// method is absent and a restart has no meaning — sees the page unchanged.
+// Confirmation comes first because a restart kills any turn in flight, and the
+// button then disables itself so a second tap cannot fire mid-restart.
+const generalSettingsPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-settings-general', 'lib', 'client.js')
+if (existsSync(generalSettingsPath)) {
+  const source = readFileSync(generalSettingsPath, 'utf8')
+  if (source.includes('ANDROID_PATCH_RESTART_BUTTON')) {
+    // already patched
+  } else {
+    const anchor = [
+      '\t\tfunction GeneralSection({ renderSlot }) {',
+      '\t\t\treturn (0, react_jsx_runtime.jsx)("div", {',
+      '\t\t\t\tclassName: GeneralSection_module_css_default.section,',
+      '\t\t\t\tchildren: renderSlot("settings.general.item", {})',
+      '\t\t\t});',
+      '\t\t}',
+    ].join('\n')
+    const replacement = [
+      '\t\tfunction GeneralSection({ renderSlot }) {',
+      '\t\t\t// ANDROID_PATCH_RESTART_BUTTON: the app shell can restart the dsh server;',
+      '\t\t\t// expose that here, where users look for settings, instead of only on the',
+      '\t\t\t// splash screen that appears when booting already failed.',
+      '\t\t\tconst [restarting, setRestarting] = react.useState(false);',
+      '\t\t\tconst canRestart = typeof window !== "undefined" && window.dshNative !== void 0;',
+      '\t\t\treturn (0, react_jsx_runtime.jsxs)("div", {',
+      '\t\t\t\tclassName: GeneralSection_module_css_default.section,',
+      '\t\t\t\tchildren: [renderSlot("settings.general.item", {}), canRestart && (0, react_jsx_runtime.jsx)("div", {',
+      '\t\t\t\t\tstyle: { padding: "16px 0 8px" },',
+      '\t\t\t\t\tchildren: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {',
+      '\t\t\t\t\t\tvariant: "outline",',
+      '\t\t\t\t\t\tsize: "sm",',
+      '\t\t\t\t\t\tdisabled: restarting,',
+      '\t\t\t\t\t\tonClick: () => {',
+      '\t\t\t\t\t\t\tif (!window.confirm("重启 DSH 服务？\\n\\n正在进行的对话会被中断，页面稍后会自动重新连接。")) return;',
+      '\t\t\t\t\t\t\tsetRestarting(true);',
+      '\t\t\t\t\t\t\ttry {',
+      '\t\t\t\t\t\t\t\twindow.dshNative.restartServer();',
+      '\t\t\t\t\t\t\t} catch (error) {',
+      '\t\t\t\t\t\t\t\tsetRestarting(false);',
+      '\t\t\t\t\t\t\t\twindow.alert("重启失败：" + (error && error.message ? error.message : error));',
+      '\t\t\t\t\t\t\t}',
+      '\t\t\t\t\t\t},',
+      '\t\t\t\t\t\tchildren: restarting ? "正在重启…" : "重启 DSH 服务"',
+      '\t\t\t\t\t})',
+      '\t\t\t\t})]',
+      '\t\t\t});',
+      '\t\t}',
+    ].join('\n')
+    if (!source.includes(anchor)) {
+      problems.push(`restart button: anchor missing in ${generalSettingsPath} (GeneralSection rewritten)`)
+    } else {
+      writeFileSync(generalSettingsPath, source.replace(anchor, replacement))
+      console.log('settings: restart button added to the General page (visible only in the app)')
+    }
+  }
+} else {
+  problems.push(`restart button: ${generalSettingsPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)

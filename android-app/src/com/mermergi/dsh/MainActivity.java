@@ -17,6 +17,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -909,6 +910,27 @@ public class MainActivity extends Activity {
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setAcceptThirdPartyCookies(web, true);
+
+        // The settings page is web content, so it cannot stop a Termux process on its own.
+        // Expose the one native action it needs: restart the server and hand back a fresh
+        // token. Only the settings UI calls this, and only after its own confirmation dialog,
+        // because a restart interrupts whatever turn is in flight.
+        web.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void restartServer() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        // Same state reset the splash "重新登录" button performs: drop the
+                        // one-shot guards so the token exchange and any permission prompt
+                        // can run again on the new server.
+                        authRetried = false;
+                        permissionRequested = false;
+                        beginBoot(true);
+                    }
+                });
+            }
+        }, "dshNative");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
