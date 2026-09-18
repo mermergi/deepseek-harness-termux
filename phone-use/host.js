@@ -386,6 +386,12 @@ return {
     // MIUI keeps the Chinese names of its own apps in separate RRO overlays, so
     // the base APK of Settings only ever says "Settings". These are the names
     // people actually use for the stock apps; a miss falls through to APK labels.
+    // Names people say that no APK contains, in two groups:
+    //  - MIUI/HyperOS stock apps: their Chinese strings ship in RRO overlays, so
+    //    the base APK label is only "Notes"/"Clock"/"Settings";
+    //  - brands whose APK label is English or pinyin: the APK says "X" (推特),
+    //    "WeCom" (企业微信), "DingDing" (钉钉), "Meituan" (美团).
+    // `phone_app action=alias` adds to this at runtime and always wins over it.
     const APP_ALIASES = {
       '设置': 'com.android.settings', 'settings': 'com.android.settings',
       '相机': 'com.android.camera', 'camera': 'com.android.camera',
@@ -396,22 +402,126 @@ return {
       '联系人': 'com.android.contacts', '通讯录': 'com.android.contacts', 'contacts': 'com.android.contacts',
       '电话': 'com.android.dialer', '拨号': 'com.android.dialer', 'dialer': 'com.android.dialer',
       '信息': 'com.android.mms', '短信': 'com.android.mms', 'messages': 'com.android.mms',
-      '文件管理': 'com.android.fileexplorer', 'filemanager': 'com.android.fileexplorer',
+      '文件管理': 'com.android.fileexplorer', '文件': 'com.android.fileexplorer', 'filemanager': 'com.android.fileexplorer',
       '浏览器': 'com.android.browser', 'browser': 'com.android.browser',
       '音乐': 'com.miui.player', 'music': 'com.miui.player',
       '天气': 'com.miui.weather2', 'weather': 'com.miui.weather2',
       '录音机': 'com.android.soundrecorder', 'recorder': 'com.android.soundrecorder',
-      '应用商店': 'com.xiaomi.market', 'store': 'com.xiaomi.market',
+      '应用商店': 'com.xiaomi.market', '小米应用商店': 'com.xiaomi.market', 'store': 'com.xiaomi.market',
       '安全中心': 'com.miui.securitycenter', 'security': 'com.miui.securitycenter',
       '主题壁纸': 'com.android.thememanager', 'themes': 'com.android.thememanager',
       '笔记': 'com.miui.notes', 'notes': 'com.miui.notes',
       '邮件': 'com.android.email', 'mail': 'com.android.email',
-      '支付': 'com.eg.android.AlipayGphone', '支付宝': 'com.eg.android.AlipayGphone',
+      '指南针': 'com.miui.compass', 'compass': 'com.miui.compass',
+      '扫一扫': 'com.xiaomi.scanner', 'scanner': 'com.xiaomi.scanner',
+      '小米视频': 'com.miui.video', '视频': 'com.miui.video',
+      '屏幕录制': 'com.miui.screenrecorder', '录屏': 'com.miui.screenrecorder',
+      '下载管理': 'com.android.providers.downloads.ui', 'downloads': 'com.android.providers.downloads.ui',
+      '钱包': 'com.mipay.wallet', 'wallet': 'com.mipay.wallet',
+      '万能遥控': 'com.duokan.phone.remotecontroller', '遥控': 'com.duokan.phone.remotecontroller',
+      '小米云盘': 'com.miui.newmidrive', '云盘': 'com.miui.newmidrive',
+      '垃圾清理': 'com.miui.cleanmaster', '清理': 'com.miui.cleanmaster', 'cleaner': 'com.miui.cleanmaster',
+      '小米画报': 'com.mfashiongallery.emag', '画报': 'com.mfashiongallery.emag',
+      '小米耳机': 'com.mi.earphone', 'earbuds': 'com.mi.earphone',
+      '小爱同学': 'com.miui.voiceassistProxy', '小爱': 'com.miui.voiceassistProxy',
+      '服务与反馈': 'com.miui.miservice', '小米服务': 'com.miui.miservice',
+      '推特': 'com.twitter.android', 'twitter': 'com.twitter.android',
+      '油管': 'com.google.android.youtube', 'youtube': 'com.google.android.youtube',
+      '谷歌浏览器': 'com.android.chrome', 'chrome': 'com.android.chrome',
+      '谷歌邮箱': 'com.google.android.gm', 'gmail': 'com.google.android.gm',
+      '谷歌': 'com.google.android.googlequicksearchbox', 'google': 'com.google.android.googlequicksearchbox',
+      '谷歌商店': 'com.android.vending', 'play商店': 'com.android.vending',
+      '企业微信': 'com.tencent.wework', 'wecom': 'com.tencent.wework',
+      '钉钉': 'com.alibaba.android.rimet', 'dingtalk': 'com.alibaba.android.rimet', 'dingding': 'com.alibaba.android.rimet',
+      '美团': 'com.sankuai.meituan', 'meituan': 'com.sankuai.meituan',
+      '大众点评': 'com.dianping.v1', '点评': 'com.dianping.v1', 'dianping': 'com.dianping.v1',
+      '微博': 'com.sina.weibo', 'weibo': 'com.sina.weibo',
+      '云闪付': 'com.unionpay', 'unionpay': 'com.unionpay',
+      '哔哩哔哩': 'tv.danmaku.bili', 'b站': 'tv.danmaku.bili', 'bilibili': 'tv.danmaku.bili',
+      '抖音': 'com.ss.android.ugc.aweme', 'douyin': 'com.ss.android.ugc.aweme',
+      '剪映': 'com.lemon.lv', 'capcut': 'com.lemon.lv',
+      '腾讯会议': 'com.tencent.wemeet.app', 'wemeet': 'com.tencent.wemeet.app',
+      '滴滴': 'com.sdu.didi.psnger', 'didi': 'com.sdu.didi.psnger',
+      '网易云': 'com.netease.cloudmusic', '网易云音乐': 'com.netease.cloudmusic',
+      '铁路12306': 'com.MobileTicket', '12306': 'com.MobileTicket',
+      '支付宝': 'com.eg.android.AlipayGphone', 'alipay': 'com.eg.android.AlipayGphone',
+      '微信': 'com.tencent.mm', 'wechat': 'com.tencent.mm',
+      '淘宝': 'com.taobao.taobao', 'taobao': 'com.taobao.taobao',
+      '京东': 'com.jingdong.app.mall', 'jd': 'com.jingdong.app.mall',
+      '拼多多': 'com.xunmeng.pinduoduo', 'pdd': 'com.xunmeng.pinduoduo',
+      '闲鱼': 'com.taobao.idlefish',
+      '高德地图': 'com.autonavi.minimap', '高德': 'com.autonavi.minimap',
+      '百度网盘': 'com.baidu.netdisk', '迅雷': 'com.xunlei.downloadprovider', '夸克': 'com.quark.browser',
+      '学习通': 'com.chaoxing.mobile', '超星': 'com.chaoxing.mobile',
+      'wps': 'cn.wps.moffice_eng', 'boss直聘': 'com.hpbr.bosszhipin',
+      '千问': 'com.aliyun.tongyi', '通义千问': 'com.aliyun.tongyi', '豆包': 'com.larus.nova',
+      'deepseek': 'com.deepseek.chat', 'chatgpt': 'com.openai.chatgpt', 'gpt': 'com.openai.chatgpt',
+      '阅读': 'io.legado.app.release', 'legado': 'io.legado.app.release',
+      'p站': 'jp.pxv.android', 'pixiv': 'jp.pxv.android',
+      '王者荣耀': 'com.tencent.tmgp.sgame', '王者': 'com.tencent.tmgp.sgame',
+      '小米商城': 'com.xiaomi.shop', '小米社区': 'com.xiaomi.vipaccount', '小米游戏中心': 'com.xiaomi.gamecenter',
+      '讯飞输入法': 'com.iflytek.inputmethod', '百度输入法': 'com.baidu.input_mi',
+      'taptap': 'com.taptap', 'termux': 'com.termux', 'shizuku': 'moe.shizuku.privileged.api',
+      'qq音乐': 'com.tencent.qqmusic', 'qq邮箱': 'com.tencent.androidqqmail',
+      '优酷': 'com.youku.phone', '爱奇艺': 'com.qiyi.video', '腾讯视频': 'com.tencent.qqlive',
+      '快手': 'com.smile.gifmaker', '小红书': 'com.xingin.xhs', '知乎': 'com.zhihu.android',
+      'tiktok': 'com.zhiliaoapp.musically',
+      'mt管理器': 'bin.mt.plus', '杀戮尖塔': 'com.humble.SlayTheSpire',
+      '学堂在线': 'com.xuetangx.mobile', '深信服': 'com.sangfor.vpn.client.phone',
+      '天翼': 'com.ct.client', '网易大神': 'com.netease.gl',
+      '相册编辑': 'com.miui.mediaeditor', '图片编辑': 'com.miui.mediaeditor',
+      '全球上网': 'com.miui.virtualsim', 'termux api': 'com.termux.api',
     }
 
     /** Case- and separator-insensitive form, used by every name comparison. */
     function normalizeName(value) {
       return String(value).trim().toLowerCase().replace(/[\s_\-·.]+/g, '')
+    }
+
+    // ── spoken-name aliases: the curated table plus everything learned ────────
+    let aliasCache = null
+
+    async function loadAliases(signal) {
+      if (aliasCache !== null) return aliasCache
+      const read = await bash(APP_CACHE_SH + '; cat "$D/aliases.json" 2>/dev/null || true', { timeoutMs: 20000, signal, stdoutMaxBytes: 1024 * 1024 })
+      const learned = {}
+      try {
+        const parsed = JSON.parse(read.stdout.text)
+        if (parsed !== null && typeof parsed === 'object') {
+          for (const key of Object.keys(parsed)) {
+            if (typeof parsed[key] === 'string' && parsed[key] !== '') learned[normalizeName(key)] = parsed[key]
+          }
+        }
+      } catch (error) {
+        // nothing learned yet
+      }
+      const curated = {}
+      for (const key of Object.keys(APP_ALIASES)) curated[normalizeName(key)] = APP_ALIASES[key]
+      aliasCache = { learned, curated }
+      return aliasCache
+    }
+
+    /** Learned names win over the curated table: Map(normalized name -> package). */
+    async function aliasMap(signal) {
+      const aliases = await loadAliases(signal)
+      const byName = new Map()
+      for (const key of Object.keys(aliases.curated)) byName.set(key, aliases.curated[key])
+      for (const key of Object.keys(aliases.learned)) byName.set(key, aliases.learned[key])
+      return byName
+    }
+
+    async function saveAlias(name, pkg, signal) {
+      const aliases = await loadAliases(signal)
+      const learned = Object.assign({}, aliases.learned)
+      learned[normalizeName(name)] = pkg
+      const out = await bash(
+        APP_CACHE_SH + '; mkdir -p "$D"; printf %s ' + hostQuote(JSON.stringify(learned)) +
+          ' > "$D/aliases.json.tmp" && mv "$D/aliases.json.tmp" "$D/aliases.json"',
+        { timeoutMs: 20000, signal },
+      )
+      if (out.exitCode !== 0) throw new Error('PhoneUse: could not save the alias: ' + clip(out.stderr.text.trim(), 160))
+      aliasCache = null
+      return learned
     }
 
     /** Parse a "pkg<TAB>label<TAB>zh|zh" scan into a Map. */
@@ -1018,10 +1128,11 @@ return {
 
     harness.registerTool(ctx, harness.defineTool({
       name: 'phone_app',
-      description: 'Inspect or control apps: action=current reads the foreground app, action=list lists installed packages with their display names (third-party by default, `filter` matches the display name or the package), action=start launches an app by package name OR by the name a person says ("微信", "QQ", "Bilibili"), action=stop force-stops a package.',
+      description: 'Inspect or control apps: action=current reads the foreground app, action=list lists installed packages with their display names (third-party by default, `filter` matches the display name, a known nickname or the package), action=start launches an app by package name OR by the name a person says ("微信", "推特", "QQ"), action=alias teaches a spoken name -> package (or lists the known ones), action=stop force-stops a package.',
       parameters: {
-        action: { type: 'string', required: true, enum: ['current', 'list', 'start', 'stop'], description: 'What to do.' },
-        target: { type: 'string', description: 'For start/stop: a package name (com.android.settings), a display name (微信 / QQ), or, for start, an http(s) URL.' },
+        action: { type: 'string', required: true, enum: ['current', 'list', 'start', 'stop', 'alias'], description: 'What to do.' },
+        target: { type: 'string', description: 'For start/stop: a package name (com.android.settings), a display name (微信 / QQ / 推特), or, for start, an http(s) URL. For alias: the spoken name to teach (omit it to list the known ones).' },
+        package: { type: 'string', description: 'For alias: the package that spoken name should launch.' },
         filter: { type: 'string', description: 'For list: only apps whose display name or package contains this substring.' },
         all: { type: 'boolean', description: 'For list: include system packages (default false).' },
       },
@@ -1035,12 +1146,20 @@ return {
         const filter = args.filter === undefined || args.filter === null ? '' : String(args.filter)
         if (action === 'list') {
           const index = await ensureAppIndex(exec.signal)
+          const aliases = await aliasMap(exec.signal)
+          const aka = new Map()
+          for (const [name, target] of aliases) {
+            if (!aka.has(target)) aka.set(target, [])
+            aka.get(target).push(name)
+          }
           const out = await shellText('pm list packages ' + (args.all === true ? '' : '-3 '), { timeoutMs: 40000, signal: exec.signal })
           let names = out.split('\n').map((line) => line.replace('package:', '').trim()).filter((line) => line !== '')
           const needle = normalizeName(filter)
           if (needle !== '') {
             names = names.filter(function (pkg) {
               if (normalizeName(pkg).indexOf(needle) !== -1) return true
+              const spoken = aka.get(pkg)
+              if (spoken !== undefined && spoken.some(function (name) { return name.indexOf(needle) !== -1 })) return true
               const entry = index.entries[pkg]
               if (entry === undefined) return false
               const labels = [typeof entry.label === 'string' ? entry.label : '']
@@ -1050,7 +1169,10 @@ return {
           }
           const apps = names.map(function (pkg) {
             const entry = index.entries[pkg]
-            return { package: pkg, label: entry === undefined || entry.label === undefined ? '' : entry.label }
+            const row = { package: pkg, label: entry === undefined || entry.label === undefined ? '' : entry.label }
+            const spoken = aka.get(pkg)
+            if (spoken !== undefined) row.aka = spoken
+            return row
           })
           return {
             action,
@@ -1064,6 +1186,28 @@ return {
           }
         }
         const target = args.target === undefined || args.target === null ? '' : String(args.target).trim()
+        if (action === 'alias') {
+          const learned = await loadAliases(exec.signal)
+          if (target === '') {
+            return {
+              action,
+              learned: Object.keys(learned.learned).map(function (name) { return { name, package: learned.learned[name] } }),
+              curated: Object.keys(learned.curated).map(function (name) { return { name, package: learned.curated[name] } }),
+              curated_count: Object.keys(learned.curated).length,
+              hint: 'Teach one with phone_app action=alias target="推特" package="com.twitter.android"; start/list then match it too.',
+            }
+          }
+          const aliasPkg = args.package === undefined || args.package === null ? '' : String(args.package).trim()
+          if (aliasPkg === '') {
+            throw new Error('PhoneUse: action "alias" needs `package` (phone_app action=alias target="推特" package="com.twitter.android"), or omit target to list the known names.')
+          }
+          const installed = await shellText('pm list packages ' + hostQuote(aliasPkg), { timeoutMs: 30000, signal: exec.signal })
+          if (installed.indexOf('package:' + aliasPkg) === -1) {
+            throw new Error('PhoneUse: "' + aliasPkg + '" is not installed, so the alias was not saved — check phone_app action=list.')
+          }
+          const saved = await saveAlias(target, aliasPkg, exec.signal)
+          return { action, name: target, package: aliasPkg, ok: true, learned_count: Object.keys(saved).length }
+        }
         if (target === '') throw new Error('PhoneUse: action "' + action + '" needs `target`.')
         if (action === 'stop') {
           await shellText('am force-stop ' + hostQuote(target), { timeoutMs: 30000, signal: exec.signal })
@@ -1088,7 +1232,7 @@ return {
           let matchedBy = 'package'
           let component = await launcherComponent(target, exec.signal)
           if (component === '') {
-            const alias = APP_ALIASES[normalizeName(target)]
+            const alias = (await aliasMap(exec.signal)).get(normalizeName(target))
             if (alias !== undefined) {
               const byAlias = await launcherComponent(alias, exec.signal)
               if (byAlias !== '') {

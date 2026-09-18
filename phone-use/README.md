@@ -15,7 +15,7 @@
 | `phone_swipe` | 滑动 / 甩动 |
 | `phone_key` | 按键（`BACK` `HOME` `APP_SWITCH` `ENTER` `DEL` `VOLUME_*` `DPAD_*` …） |
 | `phone_text` | 输入文本：走剪贴板 + `PASTE` 绕过输入法（需 Termux:API；**会替换你的剪贴板**），没装 API 时才退回 `input text` |
-| `phone_app` | 前台应用 / 带显示名的应用列表 / 启动（**包名或应用名**）/ 停止 |
+| `phone_app` | 前台应用 / 带显示名的应用列表 / 启动（**包名、应用名或昵称**）/ 教会一个新叫法 / 停止 |
 
 `phone_app action=start` 直接收人话里的名字：`target="微信"`、`target="QQ"`、`target="设置"` 都能一次调用拉起，不需要先 `list` 再对照包名。
 
@@ -37,6 +37,19 @@
 - 索引 5 分钟内视为新鲜，直接命中。
 - 名字解析顺序：包名 → 内置常用别名表（设置/相册/相机这类系统应用的中文名，MIUI 把它们的翻译放在单独的 RRO overlay 里，基础 APK 只有英文）→ 包名子串 → APK 显示名。
 - 需要 `aapt2`（`pkg install aapt` 提供）。没装就明确降级为"只能按包名/别名"，并在报错里说明，不会静默乱猜。
+
+APK 里的标签也不是人嘴里的名字：`com.twitter.android` 的标签是 `X`（人叫**推特**）、`com.tencent.wework` 是 `WeCom`（**企业微信**）、`com.alibaba.android.rimet` 是 `DingDing`（**钉钉**）、`com.sankuai.meituan` 是 `Meituan`（**美团**）。所以还有一层**叫法表**：
+
+- 内置一张常用中英对照表（推特/Twitter、油管/YouTube、B 站/bilibili、剪映/CapCut、微信/WeChat、钉钉/DingTalk、微博/Weibo、云闪付/UnionPay、大众点评/Dianping…），加上 MIUI 自带应用的中文名（它们的翻译在 RRO overlay 里，基础 APK 只有英文）。
+- 查不到的名字**教一次就永久生效**，存在 `~/.cache/dsh-phone-use/aliases.json`，并且优先于内置表：
+
+  ```
+  phone_app action=alias target="推特" package="com.twitter.android"
+  phone_app action=alias                    # 列出已学到的 + 内置的
+  ```
+
+- `phone_app action=list filter=推特` 会用叫法匹配，并在结果里回显 `aka`，让人看得出为什么命中这个包。
+- 教会不存在的包会直接报错，不会悄悄存一条无效别名。
 
 ## 前置条件
 
@@ -112,14 +125,17 @@ node phone-use/smoke.mjs     <preset>/plugin/index.js   # 离线：加载 + 执�
 node phone-use/live-test.mjs <preset>/plugin/index.js   # 真机：驱动手机跑完整流程
 ```
 
-`live-test.mjs` 最近一次的结果（11/11）：
+`live-test.mjs` 最近一次的结果（16/16）：
 
 - `phone_status` —— 真实机型 / 屏幕 / 前台窗口；断链后自己扫端口重连（约 5 s）；
 - `phone_ui` —— 列出带真实像素坐标的元素；
 - `phone_app start` —— 拉起设置；
 - `phone_app start 微信` —— **按显示名**一次拉起 `com.tencent.mm`（`matched_by=label`；冷索引 23.9 s，热 0.34 s，单个应用变更后 1.8 s）；
 - `phone_app start QQ` —— 按短包名拉起 `com.tencent.mobileqq`（0.2 s，完全不碰索引）；
-- `phone_app list filter=微信` —— 按显示名过滤，回显 `{"package":"com.tencent.mm","label":"WeChat"}`；
+- `phone_app list filter=微信` —— 按显示名过滤，回显 `{"package":"com.tencent.mm","label":"WeChat","aka":["微信","wechat"]}`；
+- `phone_app start 推特` —— 内置叫法命中 `com.twitter.android`（它的 APK 标签是 `X`）；
+- `phone_app action=alias` 教一个名字 → 立刻能用（`matched_by=alias`），且会真的写进 `aliases.json`；对未安装的包则拒绝；
+- 整轮真机操作**没有一次**写 `accelerometer_rotation`（用 `logcat -s SettingsProvider:W` 盯着看，0 次写入）；
 - `phone_tap` 按文字 —— 自己在树里找到「搜索系统设置项」并点中 (643,563)；
 - `phone_text` —— `route=clipboard + PASTE`，读回字段里确实出现了输入串（`#1 tap=(561,220) "phoneuse-ok" [EditText]`）；
 - `phone_screenshot` —— 生成 600x1302 的合法 PNG；

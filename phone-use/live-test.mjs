@@ -11,8 +11,9 @@
 // Usage: node live-test.mjs [path/to/plugin/index.js]
 
 import { execSync } from 'node:child_process'
-import { readFileSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const BASH = '/data/data/com.termux/files/usr/bin/bash'
@@ -220,6 +221,68 @@ check('phone_screenshot produces a PNG', shotOk, shotDetail)
     )
   } catch (error) {
     check('phone_app start by short package name (QQ)', false, String(error.message).slice(0, 120))
+  }
+}
+
+// ── 6c. spoken names: curated nicknames and a learned alias ─────────────────
+{
+  const started = Date.now()
+  try {
+    // The APK label is "X"; a person says 推特.
+    const nick = await call('phone_app', { action: 'start', target: '推特' })
+    check(
+      'phone_app start by curated nickname (推特)',
+      nick.ok === true && nick.package === 'com.twitter.android' && nick.matched_by === 'alias',
+      'package=' + String(nick.package) + ' matched_by=' + String(nick.matched_by) + ' in ' + String(Date.now() - started) + 'ms',
+    )
+  } catch (error) {
+    check('phone_app start by curated nickname (推特)', false, String(error.message).slice(0, 120))
+  }
+
+  try {
+    const list = await call('phone_app', { action: 'list', filter: '推特' })
+    check(
+      'phone_app list matches a nickname',
+      list.count >= 1 && String(list.apps[0].package) === 'com.twitter.android',
+      'first=' + JSON.stringify(list.apps[0]),
+    )
+  } catch (error) {
+    check('phone_app list matches a nickname', false, String(error.message).slice(0, 120))
+  }
+
+  // A name no APK contains: teach it once, then it must resolve on its own.
+  const TAUGHT = '聊天界面'
+  try {
+    const taught = await call('phone_app', { action: 'alias', target: TAUGHT, package: 'com.mermergi.dsh' })
+    const used = await call('phone_app', { action: 'start', target: TAUGHT })
+    check(
+      'alias learned then used',
+      taught.ok === true && used.package === 'com.mermergi.dsh' && used.matched_by === 'alias',
+      'package=' + String(used.package) + ' matched_by=' + String(used.matched_by),
+    )
+  } catch (error) {
+    check('alias learned then used', false, String(error.message).slice(0, 120))
+  }
+
+  let refused = false
+  try {
+    await call('phone_app', { action: 'alias', target: '不存在', package: 'com.example.nope' })
+  } catch (error) {
+    refused = /not installed/.test(String(error.message))
+  }
+  check('alias refuses an uninstalled package', refused)
+
+  // Leave the cache as it was found: drop the alias this test taught.
+  try {
+    const file = join(homedir(), '.cache', 'dsh-phone-use', 'aliases.json')
+    if (existsSync(file)) {
+      const learned = JSON.parse(readFileSync(file, 'utf8'))
+      delete learned[TAUGHT]
+      writeFileSync(file, JSON.stringify(learned))
+    }
+    check('test alias cleaned up', true)
+  } catch (error) {
+    check('test alias cleaned up', false, String(error.message).slice(0, 90))
   }
 }
 

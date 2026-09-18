@@ -41,6 +41,10 @@ const PROBE = 'MODEL=TestPhone\nRELEASE=17\nSIZE=Physical size: 1156x2510\nDENSI
 
 // A cache whose one entry is stale (size 1 vs the size-2 APK the stub reports),
 // so the name lookup has to scan and merge before it can match 微信.
+// Learned aliases: `aliases.json` is served for both the read and the write of
+// the alias step, so the nickname path resolves without a real filesystem.
+const LEARNED_ALIASES = JSON.stringify({ '推特': 'com.example.app' })
+
 const APP_INDEX = JSON.stringify({
   generatedAt: 0,
   scannedAt: 0,
@@ -63,6 +67,7 @@ function canned(command) {
   if (command.includes('wm size')) return 'Physical size: 1156x2510'
   if (command.includes('devices')) return DEVICES
   if (command.includes('apps.json')) return APP_INDEX
+  if (command.includes('aliases.json')) return LEARNED_ALIASES
   if (command.includes('aapt2 dump badging')) return 'com.example.app\t微信\t微信\n'
   if (command.includes('stat -c')) return 'com.example.app\t/data/app/base.apk\t2\t3\t1\n'
   if (command.includes('pm list packages')) return 'package:com.example.app\n'
@@ -162,6 +167,10 @@ const calls = [
   ['phone_app', { action: 'start', target: 'com.example.app' }],
   ['phone_app', { action: 'start', target: '微信' }],
   ['phone_app', { action: 'list', filter: '微信' }],
+  ['phone_app', { action: 'alias' }],
+  ['phone_app', { action: 'alias', target: '微博', package: 'com.example.app' }],
+  ['phone_app', { action: 'start', target: '推特' }],
+  ['phone_app', { action: 'list', filter: '推特' }],
 ]
 for (const [name, args] of calls) {
   const tool = REGISTERED.get(name)
@@ -173,6 +182,11 @@ for (const [name, args] of calls) {
   } catch (error) {
     problems.push('EXECUTE ' + name + ' threw: ' + String(error && error.message ? error.message : error))
   }
+}
+
+// The alias step must actually write the learned file, not just report ok.
+if (COMMANDS.filter((entry) => entry.includes('aliases.json.tmp')).length === 0) {
+  problems.push('phone_app alias did not persist to aliases.json')
 }
 
 console.log('module:   ' + target)
