@@ -4,9 +4,9 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **17 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **16 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
 
-其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标。
+其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到。
 
 ## 目录
 
@@ -210,7 +210,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-共 17 条，编号与 `android-fix.mjs` 里的注释一致。
+共 16 条，编号与 `android-fix.mjs` 里的注释一致。
 
 **Android 平台差异**（1–8）：
 
@@ -238,7 +238,7 @@ this host; refusing to run the command unconfined.
 | 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
 | 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
 
-**界面、插件与工具链**（12–17）：
+**界面、插件与工具链**（12–16）：
 
 | # | 现象 | 处理 |
 |---|---|---|
@@ -247,7 +247,6 @@ this host; refusing to run the command unconfined.
 | 14 | 想重启得靠命令行 | 通用设置页底部加「重启 DSH 服务」按钮（原生 ↔ Web 桥接，带二次确认） |
 | 15 | 装了插件后启动崩：`Cannot find package '<plugin>'` | 把 profile 里装的插件链进安装目录；顺带清理悬空链接 |
 | 16 | 插件装不上：`node-pty install … exited with exit status: 127` | 修全局 `node-gyp`：shebang 指向 Termux 的 `env`，并把 PATH 入口从"副本"改回符号链接 |
-| 17 | 打开侧边对话崩：`Minified React error #130` | 插件引用了此版 dsh 已不提供的图标（`IconSendOutline16`）；改用它实际提供的同名尺寸变体 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
