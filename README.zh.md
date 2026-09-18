@@ -4,7 +4,9 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的八处修补收敛到一个幂等脚本里，并给出可直接复制的启动步骤（其中第 7 处是 Web UI 的手机竖屏布局，性质与其余不同）。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **15 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
+
+其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的。
 
 ## 目录
 
@@ -16,6 +18,8 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [PhoneUse 插件（可选）](#phoneuse-插件可选)
 - [安全提示（务必读）](#安全提示务必读)
 - [补丁清单](#补丁清单)
+- [装插件](#装插件)
+- [重启](#重启)
 - [重装或升级之后](#重装或升级之后)
 - [验证与说明](#验证与说明)
 
@@ -206,18 +210,64 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-| 现象 | 处理 |
-|---|---|
-| 启动崩：`--expose-internals is required for HMR service` | profile 的 `patchReload` 由 `live` 改 `startup` |
-| 会话写不进：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | 安卓上放行 flock（退化为单进程；dsh 给浏览器 worker 也是这么做的） |
-| 建文件 / 落盘 `EACCES ... link` | 硬链接发布改回退：源可丢弃用 `rename`，源要留存用 `COPYFILE_EXCL` 复制 |
-| 启动崩：`Could not load the "sharp" module` | 装 `@img/sharp-wasm32` |
-| 发图被拒（外壳码 `session/agent-busy`） | 祖先目录 fsync 遇 `EACCES`/`EPERM` 就跳过 |
-| `glob`/`grep` 报 `SEARCH_FAILED`（`ripgrep launch failed`） | 补上缺失的 `@vscode/ripgrep-android-arm64`，转发到系统 `rg` |
-| 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航挪到顶部 |
-| 点"打开配置文件"没反应 | android 分支改用 `termux-open`，并按扩展名传 `--content-type` |
+共 15 条，编号与 `android-fix.mjs` 里的注释一致。
+
+**Android 平台差异**（1–8）：
+
+| # | 现象 | 处理 |
+|---|---|---|
+| 1 | 会话写不进：`ERR_FLOCK_UNSUPPORTED_PLATFORM` | 安卓上放行 flock（退化为单进程；dsh 给浏览器 worker 也是这么做的） |
+| 2 | 建文件 / 落盘 `EACCES ... link` | 硬链接发布改回退：源可丢弃用 `rename`，源要留存用 `COPYFILE_EXCL` 复制 |
+| 3 | 启动崩：`Could not load the "sharp" module` | 装 `@img/sharp-wasm32` |
+| 4 | 启动崩：HMR 服务加载失败 | profile 的 `patchReload` 由 `live` 改 `startup` |
+| 5 | 发图被拒（外壳码 `session/agent-busy`） | 祖先目录 fsync 遇 `EACCES`/`EPERM` 就跳过 |
+| 6 | `glob`/`grep` 报 `SEARCH_FAILED`（`ripgrep launch failed`） | 补上缺失的 `@vscode/ripgrep-android-arm64`，转发到系统 `rg` |
+| 7 | 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航挪到顶部 |
+| 8 | 点"打开配置文件"没反应 | android 分支改用 `termux-open`，并按扩展名传 `--content-type` |
+
+**性能**（9）：
+
+| # | 现象 | 处理 |
+|---|---|---|
+| 9 | 冷启动慢 | 给客户端 bundle 组合加缓存（约 10.6 s → 8 s；尽力而为，失配只警告） |
+
+**`0.1.6-alpha.2` 上新增**（10–11，不补则**启动即崩**）：
+
+| # | 现象 | 处理 |
+|---|---|---|
+| 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
+| 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
+
+**界面与插件**（12–15）：
+
+| # | 现象 | 处理 |
+|---|---|---|
+| 12 | 侧栏面板图标再点一次不收起（页面被挤成竖条） | 面板行改为 toggle：已选中时 `selectPanel(null)` 回到对话 |
+| 13 | 图标 tooltip 点完不消失（要点别处才没） | 侧栏 5 处 Tooltip 设为 `disabled`（触摸屏没有悬停，气泡只会滞留） |
+| 14 | 想重启得靠命令行 | 通用设置页底部加「重启 DSH 服务」按钮（原生 ↔ Web 桥接，带二次确认） |
+| 15 | 装了插件后启动崩：`Cannot find package '<plugin>'` | 把 profile 里装的插件链进安装目录；顺带清理悬空链接 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
+
+**第 10、11 条值得单独记住**：它们是 `0.1.6-alpha.2` 相对 `alpha.1` 引入的，不补就完全起不来。第 10 条的根因是上游把一个**平台特定的原生依赖**接进了所有平台的启动必经路径，而那个包从没发布过 `android-arm64`。第 15 条是第 10 条的副作用：`link` 模式同时关掉了 profile 插件的解析路由。
+
+## 装插件
+
+在界面的插件市场里装即可。**装完重启一次**（设置 → 通用设置 → 底部按钮），补丁会把插件链进安装目录——不链的话加载器找不到它，插件树整棵加载失败、服务起不来。
+
+从 **npm 装**（如 `pnpm add dshmarket`），不要用市场里给的 **git 链接**：git 路径会触发 `pnpm` 的构建脚本授权（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），授权后还要在手机上跑 `tsc`，而 git 依赖不带 `devDependencies`，结果是 `tsc: not found`。npm 上的包已经构建好了，不需要编译。
+
+## 重启
+
+三种方式，任选：
+
+- 设置 → 通用设置 → 底部「重启 DSH 服务」（**App 内，最快**）
+- App 启动页的「重新登录」（连接失败时出现）
+- Termux：`bash ~/.dsh-app/bridge.sh --restart`
+
+别用 `~/.shortcuts/tasks/start_dsh.sh` 重启——它见 3080 端口被占用就只开浏览器，不会重启服务。
+
+重启会中断正在进行的对话。
 
 ## 重装或升级之后
 
@@ -227,31 +277,81 @@ this host; refusing to run the command unconfined.
 node ~/dsh/android-fix.mjs
 ```
 
-用本仓库的 `start_dsh.sh` 启动时这步会自动完成。
+用本仓库的 `start_dsh.sh` 启动时这步会自动完成；走 App 的 bridge 时也会（每次拉起服务前都会重跑一次）。
 
-在那之前，有两点关于**装哪个版本**要知道：
+### 装哪个版本
 
-- **不要装 `0.1.6-alpha.2`。** 它启动时要一个 `node-addon-require-builtin-android-arm64` 原生绑定；那个包只发布 macOS/Linux/Windows，没有源码可在这里编译，也没有 JS 回退，所以 dsh 在提供服务前就停了。
-- **要钉就钉整棵树，不能只钉顶层包。** `@deepseek-ai/dsh@0.1.6-alpha.1` 把它的兄弟包声明成 `^0.1.6-alpha.1`，普通安装会解析到 `alpha.2` 的那批，而它们删掉了核心仍在 import 的导出（`watchUserPatches`）——于是连回滚后的安装都起不来。要一次装完，并用一个早于那批兄弟包发布的时间切点：
+**推荐 `0.1.6-alpha.2`**（当前实测可用的最新版）：
+
+```sh
+cd ~/dsh
+npm install @deepseek-ai/dsh@0.1.6-alpha.2
+node ~/dsh/android-fix.mjs     # 必需：第 10、11 条补丁不跑就起不来
+```
+
+注意 npm 的 `latest` 标签仍停在 `0.1.5-rc.2`，所以要**显式写版本号**，直接 `npm install @deepseek-ai/dsh` 装不到它。
+
+`0.1.6-alpha.2` 比 `alpha.1` 多两个**启动即崩**的问题（见补丁 10、11），都已在 `android-fix.mjs` 里处理。补完就能正常跑——本机实测通过。
+
+### 关于版本固定
+
+早期版本的 `@deepseek-ai/dsh` 会把兄弟包声明成 `^0.1.6-alpha.1`，普通安装会解析到 `alpha.2` 的那批，而其中一些删掉了核心仍在 import 的导出（`watchUserPatches`），于是连回滚后的安装都起不来。
+
+如果遇到这种"整棵树版本对不齐"的情况，用时间切点一次装完：
 
 ```sh
 npm install --before=2026-09-16T23:59:00Z @deepseek-ai/dsh@0.1.6-alpha.1 @img/sharp-wasm32 sharp
 node ~/dsh/android-fix.mjs
 ```
 
-保留 `package-lock.json`：就是它把整棵树钉住的。真出问题就用 `npm ci` 恢复。
+保留 `package-lock.json`：是它把整棵树钉住的。真出问题就用 `npm ci` 恢复。
 
-补丁里有一个**客户端 bundle 组合缓存**：dsh 启动时每注册一批插件就会重新组装一次全部客户端 bundle（本机实测 435 次调用、约占启动 10 秒），缓存把冷启动从约 10.6 秒压到约 8 秒。它只影响速度、不影响正确性，因此是尽力而为的：新版代码锚点变了只打印一行警告，不会拦住启动。
+当前 `~/dsh/package.json` 里 `@deepseek-ai/dsh` 写的是**精确版本**（没有脱字符），所以不会在你没操作时被升上去。
+
+### 依赖树布局
+
+如果装完出现 `Cannot find package '@deepseek-ai/dsh-plugin-manager'` 之类，多半是**依赖树嵌套**了——通常是 `package.json` 里多了一条与 `dsh` 内部要求冲突的顶层依赖。
+
+排查：
+
+```sh
+ls ~/dsh/node_modules/@deepseek-ai/dsh/node_modules/   # 有东西 = 嵌套了
+```
+
+修法是**彻底重装**（增量 `npm install` 改不了布局）：
+
+```sh
+cd ~/dsh
+mv node_modules ~/nm-broken        # 先移走，别急着删
+rm -f package-lock.json
+npm install
+node ~/dsh/android-fix.mjs
+```
+
+### 升级前先冒烟测试
+
+升级或改配置后，**先用别的端口起一个实例**，别直接重启生产：
+
+```sh
+cd ~/dsh
+timeout 45 node node_modules/@deepseek-ai/dsh/lib/bin.js web --no-open --port 3599
+```
+
+看到 `dsh web: http://127.0.0.1:3599/?token=...` 就是成的（超时被杀是正常的）。报错就先修，别重启。
+
+这条救过两次：一次是发现插件包没装上，一次是依赖树嵌套。
 
 dsh 目前处于 developer preview，升级可能带来破坏性变更。如果脚本报 `missing ...` 之类，说明新版代码里的锚点字符串变了，需要对照新版调整补丁；必需补丁不会静默跳过，而是明确报出哪个文件没匹配上。
 
 ## 验证与说明
 
-**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 至 16）：
+**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 至 18）：
 
-- dsh `0.1.5-rc.1` 与 `0.1.6-alpha.1` 两版都装得上、补得齐、跑得通（升级到后者后逐项复验）；
+- dsh `0.1.5-rc.1`、`0.1.6-alpha.1`、`0.1.6-alpha.2` 三版都装得上、补得齐、跑得通（升到 alpha.2 后逐项复验）；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
-- 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致。
+- 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
+- 插件安装：`dshmarket` 从 npm 装入 profile，补丁自动链进安装目录，加载器可解析；
+- App 内重启按钮：点击后 `bridge.log` 记录到 `SIGTERM` 旧进程、重启、签发新 token，新进程接续服务。
 
 **说明**：
 

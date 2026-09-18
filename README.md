@@ -4,7 +4,9 @@ English | [中文](README.zh.md)
 
 Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the eight patches that are verified to work on a real device into one idempotent script, and provides launch steps you can copy directly (patch 7 — the phone-portrait layout for the Web UI — is a different kind of change from the rest).
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **15 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
+
+Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page.
 
 ## Table of contents
 
@@ -16,6 +18,8 @@ dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) 
 - [PhoneUse plugin (optional)](#phoneuse-plugin-optional)
 - [Security notice (read this)](#security-notice-read-this)
 - [Patch list](#patch-list)
+- [Installing plugins](#installing-plugins)
+- [Restarting](#restarting)
 - [After reinstalling or upgrading](#after-reinstalling-or-upgrading)
 - [Verification and notes](#verification-and-notes)
 
@@ -209,18 +213,64 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 ## Patch list
 
-| Symptom | Fix |
-|---|---|
-| Startup crash: `--expose-internals is required for HMR service` | the profile's `patchReload` moves from `live` to `startup` |
-| Sessions cannot be written: `ERR_FLOCK_UNSUPPORTED_PLATFORM` | allow flock on Android (degrading to a single process; dsh does the same for its browser worker) |
-| Creating files / publishing to disk: `EACCES ... link` | hard-link publishing falls back: `rename` when the source can be discarded, a `COPYFILE_EXCL` copy when it has to survive |
-| Startup crash: `Could not load the "sharp" module` | install `@img/sharp-wasm32` |
-| Image sends rejected (shell code `session/agent-busy`) | skip the ancestor-directory fsync when it hits `EACCES`/`EPERM` |
-| `glob`/`grep` report `SEARCH_FAILED` (`ripgrep launch failed`) | supply the missing `@vscode/ripgrep-android-arm64` and forward to the system `rg` |
-| The right side of the settings page is squeezed (phone portrait) | inject a small `<720px` CSS block that moves the navigation to the top |
-| "Open config file" does nothing | the android branch uses `termux-open` instead, passing `--content-type` according to the extension |
+15 in total; the numbers match the comments in `android-fix.mjs`.
+
+**Android platform gaps** (1–8):
+
+| # | Symptom | Fix |
+|---|---|---|
+| 1 | Sessions cannot be written: `ERR_FLOCK_UNSUPPORTED_PLATFORM` | allow flock on Android (degrading to a single process; dsh does the same for its browser worker) |
+| 2 | Creating files / publishing to disk: `EACCES ... link` | hard-link publishing falls back: `rename` when the source can be discarded, a `COPYFILE_EXCL` copy when it has to survive |
+| 3 | Startup crash: `Could not load the "sharp" module` | install `@img/sharp-wasm32` |
+| 4 | Startup crash: the HMR service fails to load | the profile's `patchReload` moves from `live` to `startup` |
+| 5 | Image sends rejected (shell code `session/agent-busy`) | skip the ancestor-directory fsync when it hits `EACCES`/`EPERM` |
+| 6 | `glob`/`grep` report `SEARCH_FAILED` (`ripgrep launch failed`) | supply the missing `@vscode/ripgrep-android-arm64` and forward to the system `rg` |
+| 7 | The right side of the settings page is squeezed (phone portrait) | inject a small `<720px` CSS block that moves the navigation to the top |
+| 8 | "Open config file" does nothing | the android branch uses `termux-open` instead, passing `--content-type` according to the extension |
+
+**Performance** (9):
+
+| # | Symptom | Fix |
+|---|---|---|
+| 9 | Slow cold start | memoize client bundle composition (~10.6 s → 8 s; best effort, a missing anchor only warns) |
+
+**New in `0.1.6-alpha.2`** (10–11 — skip either and **boot fails outright**):
+
+| # | Symptom | Fix |
+|---|---|---|
+| 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
+| 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
+
+**UI and plugins** (12–15):
+
+| # | Symptom | Fix |
+|---|---|---|
+| 12 | Re-tapping a sidebar panel icon does not close it (the page collapses into a sliver) | the panel row toggles: `selectPanel(null)` when already active, returning to the conversation |
+| 13 | An icon tooltip never goes away after a tap | disable the sidebar's five tooltips (no hover on a touch screen, so the bubble can only linger) |
+| 14 | Restarting means reaching for a terminal | a "Restart DSH service" button at the bottom of the General settings page (native ↔ web bridge, with confirmation) |
+| 15 | Boot fails after installing a plugin: `Cannot find package '<plugin>'` | link plugins installed into a profile into the install directory; also sweep dangling links |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
+
+**Patches 10 and 11 are worth remembering separately**: they are what `0.1.6-alpha.2` introduced relative to `alpha.1`, and without them nothing boots at all. The root cause of 10 is upstream wiring a **platform-specific native dependency** into the boot path every platform takes, for a package that has never shipped an `android-arm64` build. Patch 15 is patch 10's side effect: `link` mode also turns off the profile-plugin resolution route.
+
+## Installing plugins
+
+Install from the plugin market in the UI, then **restart once** (Settings → General → the button at the bottom). The patch links the plugin into the install directory — without that link the loader cannot find it, the whole plugin tree fails, and nothing boots.
+
+Install **from npm** (`pnpm add dshmarket`), not from the **git URL** the market offers: a git install triggers pnpm's build-script allowlist (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`), and once allowed it needs to run `tsc` on the phone — but git dependencies do not get their `devDependencies`, so you get `tsc: not found`. The npm package is already built and needs no compilation.
+
+## Restarting
+
+Three ways, pick one:
+
+- Settings → General → "Restart DSH service" at the bottom (**in the app, fastest**)
+- The splash screen's "重新登录" button (appears when connecting fails)
+- In Termux: `bash ~/.dsh-app/bridge.sh --restart`
+
+Do not use `~/.shortcuts/tasks/start_dsh.sh` to restart — it only opens a browser when port 3080 is already taken, it does not restart the server.
+
+A restart interrupts whatever turn is in flight.
 
 ## After reinstalling or upgrading
 
@@ -230,12 +280,27 @@ The reasoning, the trade-offs and the traps are written up in the comments of `a
 node ~/dsh/android-fix.mjs
 ```
 
-When you launch through this repository's `start_dsh.sh`, that step happens automatically.
+When you launch through this repository's `start_dsh.sh`, that step happens automatically; the app bridge does it too (it re-runs the script before every server start).
 
-Before that, two things to know about *what* you install:
+### Which version to install
 
-- **Do not install `0.1.6-alpha.2`.** It wants a `node-addon-require-builtin-android-arm64` native binding at boot. That package ships macOS/Linux/Windows only, has no sources to build here, and offers no JS fallback, so dsh stops before it serves.
-- **Pin the whole tree, not just the top package.** `@deepseek-ai/dsh@0.1.6-alpha.1` declares its sibling packages as `^0.1.6-alpha.1`, and a plain install resolves those to `alpha.2` entries whose exports the core still imports (`watchUserPatches`), so even a rolled-back install will not start. Install once, with a cutoff from before those siblings were published:
+**`0.1.6-alpha.2` is recommended** (the newest release verified to work here):
+
+```sh
+cd ~/dsh
+npm install @deepseek-ai/dsh@0.1.6-alpha.2
+node ~/dsh/android-fix.mjs     # required: without patches 10 and 11 it will not boot
+```
+
+Note that npm's `latest` tag still points at `0.1.5-rc.2`, so name the version explicitly — a bare `npm install @deepseek-ai/dsh` will not get you this release.
+
+`0.1.6-alpha.2` adds two **boot-blocking** problems over `alpha.1` (patches 10 and 11). Both are handled in `android-fix.mjs`; patch it and it runs. Verified on this device.
+
+### On pinning versions
+
+Older `@deepseek-ai/dsh` releases declare their sibling packages as `^0.1.6-alpha.1`, and a plain install resolves those to `alpha.2` entries whose exports the core still imports (`watchUserPatches`), so even a rolled-back install will not start.
+
+If you hit a tree whose versions do not line up, install once with a cutoff from before those siblings were published:
 
 ```sh
 npm install --before=2026-09-16T23:59:00Z @deepseek-ai/dsh@0.1.6-alpha.1 @img/sharp-wasm32 sharp
@@ -244,17 +309,52 @@ node ~/dsh/android-fix.mjs
 
 Keep `package-lock.json`: it is what holds that tree together. If it breaks anyway, `npm ci` restores it.
 
-One of those patches is a **client-bundle combo cache**: at startup dsh re-assembles every client bundle once per plugin-registration wave (measured here: 435 calls, ~10 s of an ~11 s boot), and the cache cuts a cold start from ~10.6 s to ~8 s. It only affects speed, never correctness, so it is best-effort: when an anchor has moved in newer code it prints one warning instead of blocking startup.
+`~/dsh/package.json` currently pins `@deepseek-ai/dsh` to an **exact version** (no caret), so it will not drift upward without you asking.
+
+### Dependency tree layout
+
+A `Cannot find package '@deepseek-ai/dsh-plugin-manager'`-style error after installing usually means the tree got **nested** — typically because `package.json` carries a top-level dependency that conflicts with what `dsh` wants internally.
+
+Check:
+
+```sh
+ls ~/dsh/node_modules/@deepseek-ai/dsh/node_modules/   # anything here means nesting
+```
+
+The fix is a **clean reinstall** (an incremental `npm install` will not relayout the tree):
+
+```sh
+cd ~/dsh
+mv node_modules ~/nm-broken        # move it aside first, do not delete
+rm -f package-lock.json
+npm install
+node ~/dsh/android-fix.mjs
+```
+
+### Smoke-test before you restart
+
+After an upgrade or a config change, **start an instance on another port** instead of restarting the live one:
+
+```sh
+cd ~/dsh
+timeout 45 node node_modules/@deepseek-ai/dsh/lib/bin.js web --no-open --port 3599
+```
+
+Seeing `dsh web: http://127.0.0.1:3599/?token=...` means it worked (being killed by the timeout is expected). Fix any error first; do not restart into it.
+
+This has paid off twice: once catching a plugin package that never installed, once catching a nested dependency tree.
 
 dsh is in developer preview and upgrades may bring breaking changes. If the script reports something like `missing ...`, an anchor string in the newer code has changed and the patch needs adjusting against it; required patches do not skip silently — the script names the file that failed to match.
 
 ## Verification and notes
 
-**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 to 16):
+**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 to 18):
 
-- dsh `0.1.5-rc.1` and `0.1.6-alpha.1` both install, patch and run (re-checked item by item after upgrading to the latter);
+- dsh `0.1.5-rc.1`, `0.1.6-alpha.1` and `0.1.6-alpha.2` all install, patch and run (re-checked item by item after upgrading to alpha.2);
 - the Web UI responds and is usable at `127.0.0.1:3080`;
-- one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations.
+- one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations;
+- plugin install: `dshmarket` installed from npm into the profile, linked into the install tree by the patch, and resolvable by the loader;
+- in-app restart button: clicking it made `bridge.log` record the `SIGTERM` to the old pid, the restart and a fresh token, with the new process serving afterwards.
 
 **Notes**:
 
