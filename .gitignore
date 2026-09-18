@@ -3,6 +3,13 @@ npm/android-fix.mjs
 npm/
 phone-use/dsh-plugin-phone-use/
 
+# Scratch images (screenshots pasted into a session, throwaway renders). The repo
+# publishes no images of its own, so a bare *.jpg/*.jpeg/*.webp here would only
+# ever catch loose files that were never meant to be committed.
+*.jpg
+*.jpeg
+*.webp
+
 # android-app: build outputs, the 27 MB Android platform stub, and the signing key are all
 # machine-local. The key is deliberately NOT published: anyone holding it could sign an APK that
 # installs as an update over this one. A fresh clone simply generates its own key on first build,
