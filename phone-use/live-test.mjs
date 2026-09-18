@@ -185,6 +185,44 @@ try {
 }
 check('phone_screenshot produces a PNG', shotOk, shotDetail)
 
+// ── 6b. app start by the name a person says (APK label index) ───────────────
+{
+  const started = Date.now()
+  try {
+    const byName = await call('phone_app', { action: 'start', target: '微信' })
+    check(
+      'phone_app start by display name (微信)',
+      byName.ok === true && byName.package === 'com.tencent.mm',
+      'matched_by=' + String(byName.matched_by) + ' package=' + String(byName.package) + ' in ' + String(Date.now() - started) + 'ms',
+    )
+  } catch (error) {
+    check('phone_app start by display name (微信)', false, String(error.message).slice(0, 120))
+  }
+  const listed = Date.now()
+  try {
+    const list = await call('phone_app', { action: 'list', filter: '微信' })
+    check(
+      'phone_app list matches a display name',
+      list.count >= 1 && String(list.apps[0].package) === 'com.tencent.mm',
+      'labels_ready=' + String(list.labels_ready) + ' first=' + JSON.stringify(list.apps[0]) + ' in ' + String(Date.now() - listed) + 'ms',
+    )
+  } catch (error) {
+    check('phone_app list matches a display name', false, String(error.message).slice(0, 120))
+  }
+  // A package query must not need any of that: it answers from `pm` alone.
+  const quick = Date.now()
+  try {
+    const byShort = await call('phone_app', { action: 'start', target: 'QQ' })
+    check(
+      'phone_app start by short package name (QQ)',
+      byShort.ok === true && byShort.package === 'com.tencent.mobileqq',
+      'matched_by=' + String(byShort.matched_by) + ' package=' + String(byShort.package) + ' in ' + String(Date.now() - quick) + 'ms',
+    )
+  } catch (error) {
+    check('phone_app start by short package name (QQ)', false, String(error.message).slice(0, 120))
+  }
+}
+
 // ── 7. key + restore whatever was in front before the run ──────────────────
 try {
   await call('phone_key', { key: 'BACK' })

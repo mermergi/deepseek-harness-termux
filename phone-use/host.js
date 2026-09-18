@@ -189,7 +189,10 @@ return {
     // Every dispatch of a phone tool updates the status line.
     ctx.on('tools/pre-execute', function (exec, next) {
       const name = exec !== undefined && exec !== null && exec.name !== undefined ? String(exec.name) : ''
-      if (name.indexOf('phone_') === 0) notifyStatus('运行中 · ' + name)
+      if (name.indexOf('phone_') === 0) {
+        notifyStatus('运行中 · ' + name)
+        startAppIndexWarmPass()
+      }
       return next()
     })
 
@@ -360,6 +363,325 @@ return {
       )
       const line = text.trim()
       return line === '' ? 'unknown' : line.replace('mCurrentFocus=', '')
+    }
+
+    // ── installed-app index: display name ⇄ package ──────────────────────────
+    //
+    // `pm list packages` knows package names and nothing else, so "打开微信" has
+    // no answer in it: com.tencent.mm is not guessable from the display name. The
+    // name only exists inside each APK's resource table, and Termux ships aapt2,
+    // so this index is built by reading every installed APK's badging once and
+    // caching it at ~/.cache/dsh-phone-use/apps.json. A refresh re-reads only the
+    // APKs whose size/mtime moved, so installs and updates cost one badging each.
+    //
+    // Measured on this phone (8-way parallel, 489 packages incl. system): ~21 s
+    // cold, <1 s warm. The warm pass therefore runs detached, started by the
+    // first phone_* call of a session, and a name lookup only pays for a scan
+    // when the cache is cold and that pass has not landed yet.
+    const APP_INDEX_TTL_MS = 5 * 60 * 1000
+    const APP_SCAN_PARALLEL = 8
+    const APP_SCAN_BUDGET_S = 40
+    const APP_CACHE_SH = 'H="${HOME:-/data/data/com.termux/files/home}"; D="$H/.cache/dsh-phone-use"'
+
+    // MIUI keeps the Chinese names of its own apps in separate RRO overlays, so
+    // the base APK of Settings only ever says "Settings". These are the names
+    // people actually use for the stock apps; a miss falls through to APK labels.
+    const APP_ALIASES = {
+      '设置': 'com.android.settings', 'settings': 'com.android.settings',
+      '相机': 'com.android.camera', 'camera': 'com.android.camera',
+      '相册': 'com.miui.gallery', 'gallery': 'com.miui.gallery',
+      '时钟': 'com.android.deskclock', '闹钟': 'com.android.deskclock', 'clock': 'com.android.deskclock',
+      '日历': 'com.android.calendar', 'calendar': 'com.android.calendar',
+      '计算器': 'com.miui.calculator', 'calculator': 'com.miui.calculator',
+      '联系人': 'com.android.contacts', '通讯录': 'com.android.contacts', 'contacts': 'com.android.contacts',
+      '电话': 'com.android.dialer', '拨号': 'com.android.dialer', 'dialer': 'com.android.dialer',
+      '信息': 'com.android.mms', '短信': 'com.android.mms', 'messages': 'com.android.mms',
+      '文件管理': 'com.android.fileexplorer', 'filemanager': 'com.android.fileexplorer',
+      '浏览器': 'com.android.browser', 'browser': 'com.android.browser',
+      '音乐': 'com.miui.player', 'music': 'com.miui.player',
+      '天气': 'com.miui.weather2', 'weather': 'com.miui.weather2',
+      '录音机': 'com.android.soundrecorder', 'recorder': 'com.android.soundrecorder',
+      '应用商店': 'com.xiaomi.market', 'store': 'com.xiaomi.market',
+      '安全中心': 'com.miui.securitycenter', 'security': 'com.miui.securitycenter',
+      '主题壁纸': 'com.android.thememanager', 'themes': 'com.android.thememanager',
+      '笔记': 'com.miui.notes', 'notes': 'com.miui.notes',
+      '邮件': 'com.android.email', 'mail': 'com.android.email',
+      '支付': 'com.eg.android.AlipayGphone', '支付宝': 'com.eg.android.AlipayGphone',
+    }
+
+    /** Case- and separator-insensitive form, used by every name comparison. */
+    function normalizeName(value) {
+      return String(value).trim().toLowerCase().replace(/[\s_\-·.]+/g, '')
+    }
+
+    /** Parse a "pkg<TAB>label<TAB>zh|zh" scan into a Map. */
+    function parseLabelRows(text) {
+      const rows = new Map()
+      for (const line of String(text).split('\n')) {
+        const parts = line.split('\t')
+        if (parts.length < 2) continue
+        const pkg = parts[0].trim()
+        if (pkg === '') continue
+        rows.set(pkg, {
+          label: (parts[1] === undefined ? '' : parts[1]).trim(),
+          zh: (parts[2] === undefined ? '' : parts[2]).trim(),
+        })
+      }
+      return rows
+    }
+
+    function mergeIndexEntry(index, row, hit) {
+      index.entries[row.pkg] = { label: hit.label, zh: hit.zh, apk: row.apk, size: row.size, mtime: row.mtime }
+    }
+
+    async function loadAppIndex(signal) {
+      const empty = { generatedAt: 0, scannedAt: 0, complete: false, hasLabels: true, entries: {} }
+      const read = await bash(APP_CACHE_SH + '; cat "$D/apps.json" 2>/dev/null || true', { timeoutMs: 20000, signal, stdoutMaxBytes: 8 * 1024 * 1024 })
+      if (read.exitCode !== 0 || read.stdout.text.trim() === '') return empty
+      let parsed = null
+      try {
+        parsed = JSON.parse(read.stdout.text)
+      } catch (error) {
+        return empty
+      }
+      if (parsed === null || typeof parsed !== 'object' || parsed.entries === undefined || parsed.entries === null) return empty
+      return {
+        generatedAt: Number(parsed.generatedAt) || 0,
+        scannedAt: Number(parsed.scannedAt) || 0,
+        complete: parsed.complete === true,
+        hasLabels: parsed.hasLabels !== false,
+        entries: parsed.entries,
+      }
+    }
+
+    async function saveAppIndex(index, signal) {
+      const out = await bash(
+        APP_CACHE_SH + '; mkdir -p "$D"; printf %s ' + hostQuote(JSON.stringify(index)) +
+          ' > "$D/apps.json.tmp" && mv "$D/apps.json.tmp" "$D/apps.json"',
+        { timeoutMs: 30000, signal },
+      )
+      if (out.exitCode !== 0) throw new Error('PhoneUse: could not cache the app index: ' + clip(out.stderr.text.trim(), 160))
+    }
+
+    /** pkg, base APK path, size, mtime and third-party flag for every package. */
+    async function appApkRows(signal) {
+      // Two bulk passes on purpose: one awk over `pm` output, one single `stat`
+      // invocation for all ~490 APKs. The obvious per-package loop (a `stat` plus
+      // a `grep` each) cost ~10 s of process spawning per refresh — measured, and
+      // the reason a warm lookup still looked slow.
+      const script = [
+        APP_CACHE_SH + '; mkdir -p "$D"',
+        'adb shell pm list packages -3 | tr -d "\\r" | sed "s/^package://" > "$D/third.txt"',
+        'adb shell pm list packages -f | tr -d "\\r" | sed "s/^package://" | awk -F= \'NR==FNR { third[$1]=1; next } ' +
+          '{ apk=$0; sub(/=[^=]*$/, "", apk); pkg=$NF; print pkg "\\t" apk "\\t" ((pkg in third) ? 1 : 0) }\' "$D/third.txt" - > "$D/pkgs.tsv"',
+        'cut -f2 "$D/pkgs.tsv" | tr "\\n" "\\0" | xargs -0 stat -c "%n\\t%s\\t%Y" 2>/dev/null > "$D/stats.tsv"',
+        'awk -F"\\t" \'NR==FNR { size[$1]=$2; mtime[$1]=$3; next } ' +
+          '{ printf "%s\\t%s\\t%s\\t%s\\t%s\\n", $1, $2, (($2 in size) ? size[$2] : 0), (($2 in mtime) ? mtime[$2] : 0), $3 }\' "$D/stats.tsv" "$D/pkgs.tsv"',
+      ].join('\n')
+      const out = await bash(script, { timeoutMs: 60000, signal, stdoutMaxBytes: 8 * 1024 * 1024 })
+      const rows = []
+      for (const line of out.stdout.text.split('\n')) {
+        const parts = line.split('\t')
+        if (parts.length < 5 || parts[0] === '') continue
+        rows.push({
+          pkg: parts[0],
+          apk: parts[1],
+          size: Number(parts[2]) || 0,
+          mtime: Number(parts[3]) || 0,
+          third: parts[4] === '1',
+        })
+      }
+      // Third-party APKs carry the names people actually ask for, so they are
+      // scanned first: a scan cut short by the time budget still answers "微信".
+      rows.sort(function (a, b) { return (b.third ? 1 : 0) - (a.third ? 1 : 0) })
+      return rows
+    }
+
+    /** The one-APK label reader. Input lines are "apk=pkg" (package last, so the
+     *  last `=` is the separator even though APK paths contain `=` themselves). */
+    const LABEL_ONE = [
+      '#!/data/data/com.termux/files/usr/bin/bash',
+      'line="$1"; apk="${line%=*}"; pkg="${line##*=}"',
+      'if [ ! -f "$apk" ]; then printf "%s\\t\\t\\n" "$pkg"; exit 0; fi',
+      'labels=$(aapt2 dump badging "$apk" 2>/dev/null | awk -F"\'" \'/^application-label:/{d=$2} /^application-label-zh/{z=z (z==""?"":"|") $2} END{printf "%s\\t%s", d, z}\')',
+      'printf "%s\\t%s\\n" "$pkg" "$labels"',
+    ].join('\n')
+
+    function scanPreamble() {
+      return [
+        'export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"',
+        APP_CACHE_SH + '; mkdir -p "$D"',
+        'command -v aapt2 >/dev/null 2>&1 || { printf "NOAAPT2\\n"; exit 0; }',
+        "cat > \"$D/label-one.sh\" <<'PHONEUSE_LABEL_ONE'",
+        LABEL_ONE,
+        'PHONEUSE_LABEL_ONE',
+        'chmod +x "$D/label-one.sh"',
+      ]
+    }
+
+    /** Labels for the given "pkg=apk" lines; null when aapt2 is not installed. */
+    async function scanAppLabels(lines, signal, budgetSeconds) {
+      const script = scanPreamble().concat([
+        "cat > \"$D/scan.raw\" <<'PHONEUSE_APK_LIST'",
+        lines.join('\n'),
+        'PHONEUSE_APK_LIST',
+        'timeout ' + String(budgetSeconds) + ' xargs -P ' + String(APP_SCAN_PARALLEL) + ' -n 1 "$D/label-one.sh" < "$D/scan.raw"',
+      ]).join('\n')
+      const out = await bash(script, { timeoutMs: (budgetSeconds + 15) * 1000, signal, stdoutMaxBytes: 8 * 1024 * 1024 })
+      if (out.stdout.text.indexOf('NOAAPT2') !== -1) return null
+      return parseLabelRows(out.stdout.text)
+    }
+
+    /** Whatever the detached warm pass already produced, plus when it finished. */
+    async function readWarmLabels(signal) {
+      const out = await bash(
+        APP_CACHE_SH + '; if [ -f "$D/labels.raw.tsv" ]; then stat -c "%Y" "$D/labels.raw.tsv"; cat "$D/labels.raw.tsv"; fi',
+        { timeoutMs: 30000, signal, stdoutMaxBytes: 8 * 1024 * 1024 },
+      )
+      const text = out.stdout.text
+      if (text.trim() === '') return { mtime: 0, rows: new Map(), running: false }
+      const breakAt = text.indexOf('\n')
+      const running = (await bash(APP_CACHE_SH + '; [ -f "$D/warm.lock" ] && printf yes || printf no', { timeoutMs: 15000, signal })).stdout.text.trim() === 'yes'
+      if (breakAt === -1) return { mtime: Number(text.trim()) || 0, rows: new Map(), running }
+      return { mtime: Number(text.slice(0, breakAt).trim()) || 0, rows: parseLabelRows(text.slice(breakAt + 1)), running }
+    }
+
+    /** Wait out an in-flight warm pass instead of scanning the same APKs twice. */
+    async function warmLabelsWhenReady(signal, timeoutMs) {
+      const deadline = Date.now() + timeoutMs
+      let warm = await readWarmLabels(signal)
+      while (warm.running && warm.rows.size === 0 && Date.now() < deadline) {
+        await bash('sleep 2', { timeoutMs: 8000, signal })
+        warm = await readWarmLabels(signal)
+      }
+      return warm
+    }
+
+    /** Start the detached full scan once per session; it must never block a call. */
+    let warmPassStarted = false
+    function startAppIndexWarmPass() {
+      if (warmPassStarted) return
+      warmPassStarted = true
+      const script = scanPreamble().concat([
+        'touch "$D/warm.lock"; trap \'rm -f "$D/warm.lock"\' EXIT',
+        'adb shell pm list packages -3 | tr -d "\\r" | sed "s/^package://" > "$D/third.txt"',
+        'adb shell pm list packages -f | tr -d "\\r" | sed "s/^package://" ' +
+          '| awk -F= \'NR==FNR { third[$1]=1; next } { print (($NF) in third ? 1 : 0) "\\t" $0 }\' "$D/third.txt" - ' +
+          '| sort -s -k1,1r | cut -f2- > "$D/scan.raw"',
+        'timeout 300 xargs -P ' + String(APP_SCAN_PARALLEL) + ' -n 1 "$D/label-one.sh" < "$D/scan.raw" > "$D/labels.raw.tmp"',
+        'mv "$D/labels.raw.tmp" "$D/labels.raw.tsv"',
+      ]).join('\n')
+      const detached = APP_CACHE_SH + '; mkdir -p "$D"; nohup bash -c ' + hostQuote(script) + ' >"$D/warm.log" 2>&1 &'
+      Promise.resolve(bash(detached, { timeoutMs: 20000 })).catch(function () {})
+    }
+
+    async function ensureAppIndex(signal, options) {
+      const index = await loadAppIndex(signal)
+      const force = options !== undefined && options.force === true
+      const fresh = index.generatedAt > 0 && Date.now() - index.generatedAt < APP_INDEX_TTL_MS
+      // An incomplete pass is retried soon, but not on every call in one burst.
+      const retry = index.complete === false && Date.now() - index.scannedAt > 15000
+      if (!force && fresh && !retry) return index
+      return await refreshAppIndex(index, signal)
+    }
+
+    async function refreshAppIndex(index, signal) {
+      const rows = await appApkRows(signal)
+      const installed = new Set(rows.map(function (row) { return row.pkg }))
+      for (const pkg of Object.keys(index.entries)) if (!installed.has(pkg)) delete index.entries[pkg]
+      const stale = rows.filter(function (row) {
+        const known = index.entries[row.pkg]
+        if (known === undefined || known.apk !== row.apk || known.size !== row.size || known.mtime !== row.mtime) return true
+        return typeof known.label !== 'string'
+      })
+      if (stale.length === 0 || index.hasLabels === false) {
+        index.complete = true
+      } else {
+        const warm = stale.length > 0 ? await warmLabelsWhenReady(signal, 30000) : { mtime: 0, rows: new Map() }
+        const need = []
+        for (const row of stale) {
+          const hit = warm.rows.get(row.pkg)
+          if (hit !== undefined && warm.mtime >= row.mtime) mergeIndexEntry(index, row, hit)
+          else need.push(row)
+        }
+        if (need.length === 0) {
+          index.complete = true
+        } else {
+          const scanned = await scanAppLabels(need.map(function (row) { return row.apk + '=' + row.pkg }), signal, APP_SCAN_BUDGET_S)
+          if (scanned === null) {
+            index.hasLabels = false
+            index.complete = true
+          } else {
+            for (const row of need) {
+              const hit = scanned.get(row.pkg)
+              if (hit !== undefined) mergeIndexEntry(index, row, hit)
+            }
+            index.complete = scanned.size >= need.length
+          }
+        }
+      }
+      index.scannedAt = Date.now()
+      index.generatedAt = Date.now()
+      await saveAppIndex(index, signal)
+      return index
+    }
+
+    /** Rank installed apps against a spoken name; higher is better. */
+    function matchApps(index, query) {
+      const needle = normalizeName(query)
+      const hits = []
+      if (needle === '') return hits
+      for (const pkg of Object.keys(index.entries)) {
+        const entry = index.entries[pkg]
+        const labels = [typeof entry.label === 'string' ? entry.label : '']
+        if (typeof entry.zh === 'string' && entry.zh !== '') labels.push.apply(labels, entry.zh.split('|'))
+        let rank = 0
+        for (const label of labels) {
+          const value = normalizeName(label)
+          if (value === '') continue
+          if (value === needle) rank = Math.max(rank, 100)
+          else if (value.indexOf(needle) === 0) rank = Math.max(rank, 70)
+          else if (value.indexOf(needle) !== -1) rank = Math.max(rank, 50)
+        }
+        const name = normalizeName(pkg)
+        if (name === needle) rank = Math.max(rank, 120)
+        else if (name.endsWith(needle)) rank = Math.max(rank, 90)
+        else if (name.indexOf(needle) !== -1) rank = Math.max(rank, 45)
+        if (rank > 0) hits.push({ package: pkg, label: labels[0], rank })
+      }
+      hits.sort(function (a, b) { return b.rank - a.rank || a.package.length - b.package.length })
+      return hits
+    }
+
+    /** Package-name-only match, so a package query never needs the APK scan. */
+    async function matchPackagesByName(query, signal) {
+      const out = await shellText('pm list packages', { timeoutMs: 40000, signal })
+      const needle = normalizeName(query)
+      const hits = []
+      for (const line of out.split('\n')) {
+        const pkg = line.replace('package:', '').trim()
+        if (pkg === '') continue
+        const name = normalizeName(pkg)
+        let rank = 0
+        if (name === needle) rank = 120
+        else if (name.endsWith(needle)) rank = 90
+        else if (name.indexOf(needle) !== -1) rank = 45
+        if (rank > 0) hits.push({ package: pkg, rank })
+      }
+      hits.sort(function (a, b) { return b.rank - a.rank || a.package.length - b.package.length })
+      return hits
+    }
+
+    /** Package -> launcher component; '' when the package has no launcher entry. */
+    async function launcherComponent(pkg, signal) {
+      const resolved = await shellText(
+        'cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ' +
+          hostQuote(pkg) + ' 2>&1 | tail -1',
+        { timeoutMs: 40000, signal },
+      )
+      const component = resolved.trim().split('\n').pop().trim()
+      if (component.indexOf('/') === -1 || /\s/.test(component)) return ''
+      return component
     }
 
     harness.registerTool(ctx, harness.defineTool({
@@ -696,11 +1018,11 @@ return {
 
     harness.registerTool(ctx, harness.defineTool({
       name: 'phone_app',
-      description: 'Inspect or control apps: action=current reads the foreground app, action=list lists installed packages (third-party by default, `filter` narrows it), action=start launches a package or opens a URL, action=stop force-stops a package.',
+      description: 'Inspect or control apps: action=current reads the foreground app, action=list lists installed packages with their display names (third-party by default, `filter` matches the display name or the package), action=start launches an app by package name OR by the name a person says ("微信", "QQ", "Bilibili"), action=stop force-stops a package.',
       parameters: {
         action: { type: 'string', required: true, enum: ['current', 'list', 'start', 'stop'], description: 'What to do.' },
-        target: { type: 'string', description: 'For start/stop: a package name (com.android.settings) or, for start, an http(s) URL.' },
-        filter: { type: 'string', description: 'For list: only packages whose name contains this substring.' },
+        target: { type: 'string', description: 'For start/stop: a package name (com.android.settings), a display name (微信 / QQ), or, for start, an http(s) URL.' },
+        filter: { type: 'string', description: 'For list: only apps whose display name or package contains this substring.' },
         all: { type: 'boolean', description: 'For list: include system packages (default false).' },
       },
       output: { schema: { type: 'json' }, render: (_args, value) => textBlocks(value) },
@@ -712,10 +1034,34 @@ return {
         }
         const filter = args.filter === undefined || args.filter === null ? '' : String(args.filter)
         if (action === 'list') {
+          const index = await ensureAppIndex(exec.signal)
           const out = await shellText('pm list packages ' + (args.all === true ? '' : '-3 '), { timeoutMs: 40000, signal: exec.signal })
-          let packages = out.split('\n').map((line) => line.replace('package:', '').trim()).filter((line) => line !== '')
-          if (filter !== '') packages = packages.filter((name) => name.indexOf(filter) !== -1)
-          return { action, filter, count: packages.length, packages: packages.slice(0, 100), truncated: packages.length > 100 }
+          let names = out.split('\n').map((line) => line.replace('package:', '').trim()).filter((line) => line !== '')
+          const needle = normalizeName(filter)
+          if (needle !== '') {
+            names = names.filter(function (pkg) {
+              if (normalizeName(pkg).indexOf(needle) !== -1) return true
+              const entry = index.entries[pkg]
+              if (entry === undefined) return false
+              const labels = [typeof entry.label === 'string' ? entry.label : '']
+              if (typeof entry.zh === 'string' && entry.zh !== '') labels.push.apply(labels, entry.zh.split('|'))
+              return labels.some(function (label) { return normalizeName(label).indexOf(needle) !== -1 })
+            })
+          }
+          const apps = names.map(function (pkg) {
+            const entry = index.entries[pkg]
+            return { package: pkg, label: entry === undefined || entry.label === undefined ? '' : entry.label }
+          })
+          return {
+            action,
+            filter,
+            count: apps.length,
+            apps: apps.slice(0, 100),
+            packages: names.slice(0, 100),
+            third_party_only: args.all !== true,
+            labels_ready: index.hasLabels !== false && index.complete === true,
+            truncated: names.length > 100,
+          }
         }
         const target = args.target === undefined || args.target === null ? '' : String(args.target).trim()
         if (target === '') throw new Error('PhoneUse: action "' + action + '" needs `target`.')
@@ -728,14 +1074,72 @@ return {
             await shellText('am start -a android.intent.action.VIEW -d ' + hostQuote(target), { timeoutMs: 40000, signal: exec.signal })
             return { action, url: target, ok: true }
           }
+          // Resolve the package's launcher activity, then start it with `am start`.
+          // Never launch with `monkey`: on MIUI/HyperOS the Monkey runtime writes
+          // Settings.System.ACCELEROMETER_ROTATION=1 as it starts up (measured: the
+          // SettingsProvider write lands ~5 ms after "Events injected"), which
+          // silently turns the user's rotation lock off. `am start` does not.
+          //
+          // The target may be a package, a name a person says, or an alias. A
+          // package answers on the first adb call; a name only needs the APK
+          // label index (~21 s cold once, <1 s warm) when nothing cheaper hit.
+          const wanted = target
+          let pkg = target
+          let matchedBy = 'package'
+          let component = await launcherComponent(target, exec.signal)
+          if (component === '') {
+            const alias = APP_ALIASES[normalizeName(target)]
+            if (alias !== undefined) {
+              const byAlias = await launcherComponent(alias, exec.signal)
+              if (byAlias !== '') {
+                component = byAlias
+                pkg = alias
+                matchedBy = 'alias'
+              }
+            }
+          }
+          if (component === '') {
+            const byName = await matchPackagesByName(target, exec.signal)
+            if (byName.length > 0 && byName[0].rank >= 90 && (byName.length === 1 || byName[0].rank > byName[1].rank)) {
+              const byPackage = await launcherComponent(byName[0].package, exec.signal)
+              if (byPackage !== '') {
+                component = byPackage
+                pkg = byName[0].package
+                matchedBy = 'package-name'
+              }
+            }
+          }
+          if (component === '') {
+            let index = await ensureAppIndex(exec.signal)
+            let hits = matchApps(index, target)
+            if (hits.length === 0 || hits[0].rank < 90) {
+              index = await ensureAppIndex(exec.signal, { force: true })
+              hits = matchApps(index, target)
+            }
+            if (hits.length === 0) {
+              const why = index.hasLabels === false
+                ? ' (display names are unavailable: `pkg install aapt` in Termux turns them on)'
+                : index.complete === false ? ' (the app-name index is still filling in — retry once)' : ''
+              throw new Error('PhoneUse: no installed app matches "' + wanted + '"' + why + '. Use phone_app action=list with a `filter`, or the package name.')
+            }
+            if (hits.length > 1 && hits[1].rank === hits[0].rank) {
+              throw new Error('PhoneUse: "' + wanted + '" matches several apps — pass one of: ' +
+                hits.slice(0, 5).map(function (hit) { return hit.package + ' (' + hit.label + ')' }).join(', '))
+            }
+            const byLabel = await launcherComponent(hits[0].package, exec.signal)
+            if (byLabel === '') throw new Error('PhoneUse: ' + hits[0].package + ' has no launcher activity.')
+            component = byLabel
+            pkg = hits[0].package
+            matchedBy = 'label'
+          }
           const out = await shellText(
-            'monkey -p ' + hostQuote(target) + ' -c android.intent.category.LAUNCHER 1 2>&1 | tail -3',
+            'am start -n ' + hostQuote(component) + ' 2>&1 | tail -3',
             { timeoutMs: 40000, signal: exec.signal },
           )
-          if (/No activities found|aborted/i.test(out)) {
-            throw new Error('PhoneUse: could not launch "' + target + '" — no launcher activity. Check the package name with phone_app action=list.')
+          if (/Error type|Exception|does not exist|unable to resolve/i.test(out)) {
+            throw new Error('PhoneUse: could not launch "' + wanted + '" (' + component + '): ' + clip(out.trim(), 160))
           }
-          return { action, package: target, ok: true, detail: clip(out.trim(), 200) }
+          return { action, package: pkg, component, matched_by: matchedBy, ok: true, detail: clip(out.trim(), 200) }
         }
         throw new Error('PhoneUse: unknown action "' + action + '".')
       },

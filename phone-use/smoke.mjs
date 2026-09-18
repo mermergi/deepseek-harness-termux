@@ -39,6 +39,16 @@ const DEVICES = 'List of devices attached\n127.0.0.1:39119\tdevice\n'
 const PROBE = 'MODEL=TestPhone\nRELEASE=17\nSIZE=Physical size: 1156x2510\nDENSITY=Physical density: 480\n'
   + 'WAKE=mWakefulness=Awake\nFOCUS=' + FOCUS + '\n'
 
+// A cache whose one entry is stale (size 1 vs the size-2 APK the stub reports),
+// so the name lookup has to scan and merge before it can match 微信.
+const APP_INDEX = JSON.stringify({
+  generatedAt: 0,
+  scannedAt: 0,
+  complete: true,
+  hasLabels: true,
+  entries: { 'com.example.app': { label: 'Old', zh: '', apk: '/data/app/base.apk', size: 1, mtime: 1 } },
+})
+
 const REGISTERED = new Map()
 const HANDLERS = []
 const COMMANDS = []
@@ -52,8 +62,12 @@ function canned(command) {
   if (command.includes('dumpsys window')) return FOCUS
   if (command.includes('wm size')) return 'Physical size: 1156x2510'
   if (command.includes('devices')) return DEVICES
+  if (command.includes('apps.json')) return APP_INDEX
+  if (command.includes('aapt2 dump badging')) return 'com.example.app\t微信\t微信\n'
+  if (command.includes('stat -c')) return 'com.example.app\t/data/app/base.apk\t2\t3\t1\n'
   if (command.includes('pm list packages')) return 'package:com.example.app\n'
-  if (command.includes('monkey')) return 'Events injected: 1\n'
+  if (command.includes('resolve-activity')) return 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\ncom.example/.Main\n'
+  if (command.includes('am start')) return 'Starting: Intent { cmp=com.example/.Main }\n'
   return ''
 }
 
@@ -145,6 +159,9 @@ const calls = [
   ['phone_key', { key: 'BACK' }],
   ['phone_text', { text: 'hello world' }],
   ['phone_app', { action: 'current' }],
+  ['phone_app', { action: 'start', target: 'com.example.app' }],
+  ['phone_app', { action: 'start', target: '微信' }],
+  ['phone_app', { action: 'list', filter: '微信' }],
 ]
 for (const [name, args] of calls) {
   const tool = REGISTERED.get(name)

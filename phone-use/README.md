@@ -15,14 +15,34 @@
 | `phone_swipe` | 滑动 / 甩动 |
 | `phone_key` | 按键（`BACK` `HOME` `APP_SWITCH` `ENTER` `DEL` `VOLUME_*` `DPAD_*` …） |
 | `phone_text` | 输入文本：走剪贴板 + `PASTE` 绕过输入法（需 Termux:API；**会替换你的剪贴板**），没装 API 时才退回 `input text` |
-| `phone_app` | 前台应用 / 包列表 / 启动 / 停止 |
+| `phone_app` | 前台应用 / 带显示名的应用列表 / 启动（**包名或应用名**）/ 停止 |
+
+`phone_app action=start` 直接收人话里的名字：`target="微信"`、`target="QQ"`、`target="设置"` 都能一次调用拉起，不需要先 `list` 再对照包名。
 
 另有一条**状态通知通道**（不是工具）：agent 每次调用 `phone_*`，就把 `运行中 · phone_xxx` 推到同一条通知上（固定 `--id`，原地更新不堆叠）；一轮结束变成 `已结束 · HH:MM:SS · 等你指令`，并带一个「打开会话」按钮一跳到 GUI。它解决的正是"agent 在别的 app 里操作时，你不知道它跑完没有、还得自己切回来"。
+
+## 按名称启动：应用名索引
+
+`pm list packages` 只有包名，`微信` 对应 `com.tencent.mm` 这件事无法从包名推出来；显示名只存在于每个 APK 的资源表里。所以 `phone_app` 在第一次需要时读一遍全部 APK 的 `aapt2 dump badging`，把 **包名 ⇄ 显示名（含 `application-label-zh*`）** 落到缓存：
+
+```
+~/.cache/dsh-phone-use/apps.json      # 索引（包名 → 显示名 / APK 路径 / 大小 / mtime）
+~/.cache/dsh-phone-use/labels.raw.tsv # 后台预热扫描的原始结果
+```
+
+实测（本机 489 个包，含系统应用，8 路并行）：**冷启动约 21–24 s，热查 <0.4 s，单个应用变更后增量刷新约 1.8 s**。为此：
+
+- 每次会话第一个 `phone_*` 调用会**后台预热**（`nohup`，不阻塞任何工具调用）；等你要开某个应用时，索引通常已经好了。
+- 索引按 **APK 路径 + 大小 + mtime** 增量校验，装/更新一个应用只重新读那一个 APK，不是每次全扫。
+- 索引 5 分钟内视为新鲜，直接命中。
+- 名字解析顺序：包名 → 内置常用别名表（设置/相册/相机这类系统应用的中文名，MIUI 把它们的翻译放在单独的 RRO overlay 里，基础 APK 只有英文）→ 包名子串 → APK 显示名。
+- 需要 `aapt2`（`pkg install aapt` 提供）。没装就明确降级为"只能按包名/别名"，并在报错里说明，不会静默乱猜。
 
 ## 前置条件
 
 ```sh
 pkg install android-tools
+pkg install aapt          # 可选：按应用显示名启动需要 aapt2
 ```
 
 手机打开「无线调试」，在 Termux 里配对并连上本机：
@@ -92,11 +112,14 @@ node phone-use/smoke.mjs     <preset>/plugin/index.js   # 离线：加载 + 执�
 node phone-use/live-test.mjs <preset>/plugin/index.js   # 真机：驱动手机跑完整流程
 ```
 
-`live-test.mjs` 最近一次的结果（7/7）：
+`live-test.mjs` 最近一次的结果（11/11）：
 
-- `phone_status` —— 真实机型 / 屏幕 / 前台窗口；
+- `phone_status` —— 真实机型 / 屏幕 / 前台窗口；断链后自己扫端口重连（约 5 s）；
 - `phone_ui` —— 列出带真实像素坐标的元素；
 - `phone_app start` —— 拉起设置；
+- `phone_app start 微信` —— **按显示名**一次拉起 `com.tencent.mm`（`matched_by=label`；冷索引 23.9 s，热 0.34 s，单个应用变更后 1.8 s）；
+- `phone_app start QQ` —— 按短包名拉起 `com.tencent.mobileqq`（0.2 s，完全不碰索引）；
+- `phone_app list filter=微信` —— 按显示名过滤，回显 `{"package":"com.tencent.mm","label":"WeChat"}`；
 - `phone_tap` 按文字 —— 自己在树里找到「搜索系统设置项」并点中 (643,563)；
 - `phone_text` —— `route=clipboard + PASTE`，读回字段里确实出现了输入串（`#1 tap=(561,220) "phoneuse-ok" [EditText]`）；
 - `phone_screenshot` —— 生成 600x1302 的合法 PNG；
@@ -104,7 +127,8 @@ node phone-use/live-test.mjs <preset>/plugin/index.js   # 真机：驱动手机�
 
 组成另外用 `standingKeyFor()` 做过真实挂载校验（`mounted OK`）。
 
-**两个只有真机才暴露的坑**，都已写进实现：
+**三个只有真机才暴露的坑**，都已写进实现：
 
 1. **`input text` 在中文输入法下会静默丢字。** 实测 `input text 'phoneuse-ok'` 之后字段里只剩一个 `－`：字母被当成拼音合成丢掉了，`-` 被转成全角。所以 `phone_text` 的主路径改成剪贴板 + `PASTE`（绕开输入法），并做一次**读回校验**，把"敲了"和"落地了"分开报告。
-2. **注册成功 ≠ 能跑。** 一次重构删掉了某个变量的定义却漏删引用：语法合法、`node --check` 通过、注册也正常，只有真调用 `phone_ui` 时才抛 `ReferenceError`。现在 `smoke.mjs` 会执行每个工具，这类 bug 在提交前就会被挡下。
+2. **`monkey` 会顺手改系统设置。** 原来用 `monkey -p <pkg> -c LAUNCHER 1` 启动应用；在 MIUI/HyperOS 上 Monkey 启动时会写 `Settings.System.ACCELEROMETER_ROTATION=1`（实测：`Events injected: 1` 之后 **5 ms** 就出现该设置的写入），也就是**每次"打开应用"都会把用户的方向锁定关掉**。`am start` 不会。现在启动改走 `cmd package resolve-activity --brief` + `am start -n`，`host.js` 里不再出现 monkey 启动路径。
+3. **注册成功 ≠ 能跑。** 一次重构删掉了某个变量的定义却漏删引用：语法合法、`node --check` 通过、注册也正常，只有真调用 `phone_ui` 时才抛 `ReferenceError`。现在 `smoke.mjs` 会执行每个工具，这类 bug 在提交前就会被挡下。
