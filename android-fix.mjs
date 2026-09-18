@@ -4,7 +4,7 @@
 // Three unrelated Android limitations are handled here; each is listed with the
 // reason it exists and what it costs. `DSH_PERMISSION_MODE` is not a patch: the
 // shipped profile already reads it, and the launcher sets it.
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -763,6 +763,74 @@ if (existsSync(generalSettingsPath)) {
   }
 } else {
   problems.push(`restart button: ${generalSettingsPath} missing`)
+}
+
+// 15. Link profile-installed plugins into the install directory.
+//
+// Patches 1-14 aside, this exists because of patch 10. Restoring the alpha.1
+// default `resolutionMode: "link"` stops alpha.2 from requiring an addon that
+// has no Android build — but that mode also means PluginPackages gets an empty
+// config and returns before installProfileResolution() runs, so the profile
+// node_modules resolution route is never registered. A plugin installed into
+// ~/.dsh/profiles/<name>/node_modules is then invisible to the loader, which
+// resolves from the install directory and walks upward from there:
+//
+//   Cannot find package 'dshmarket' → plugin tree fails → nothing boots.
+//
+// Linking each plugin into <install>/node_modules makes it resolvable again.
+// Only the plugin itself is linked, never its dependencies: Node resolves those
+// from the symlink's real path, which lands on the profile's own node_modules
+// where the versions the plugin actually asked for already live. Linking those
+// too would shadow them with whatever the install tree happens to carry (dsh
+// ships undici 8.x; dshmarket wants 7.x).
+//
+// Scoped and quiet on purpose: a profile with no node_modules, or a plugin name
+// already taken in the install tree, is skipped rather than fought over.
+const profilesRoot = join(homedir(), '.dsh', 'profiles')
+if (existsSync(profilesRoot)) {
+  let linked = 0
+  for (const entry of readdirSync(profilesRoot)) {
+    // Skip the workspace's own shared node_modules and anything hidden.
+    if (entry.startsWith('.')) continue
+    const profileDir = join(profilesRoot, entry)
+    // Only real profiles (they carry a manifest), never loose directories.
+    if (!existsSync(join(profileDir, 'package.json'))) continue
+    const profileModules = join(profileDir, 'node_modules')
+    if (!existsSync(profileModules)) continue
+    for (const name of readdirSync(profileModules)) {
+      if (name.startsWith('.')) continue
+      // Scoped packages (@scope/name) need the scope directory handled too.
+      const names = name.startsWith('@')
+        ? readdirSync(join(profileModules, name)).map((sub) => `${name}/${sub}`)
+        : [name]
+      for (const pkgName of names) {
+        const source = join(profileModules, pkgName)
+        const target = join(nodeModules, pkgName)
+        let present = false
+        try {
+          lstatSync(target)
+          present = true
+        } catch {
+          present = false
+        }
+        if (present) continue
+        try {
+          mkdirSync(dirname(target), { recursive: true })
+          symlinkSync(source, target, 'dir')
+          linked += 1
+          console.log(`profile plugin: linked ${pkgName} from profile ${entry}`)
+        } catch (error) {
+          // A race with a concurrent install, or a path we cannot write: warn,
+          // never fail the launch over it.
+          console.warn(`profile plugin: could not link ${pkgName}: ${error.message}`)
+        }
+      }
+    }
+  }
+  if (linked === 0) {
+    // Nothing to do is the normal case once everything is linked.
+    console.log('profile plugins: all resolvable')
+  }
 }
 
 if (problems.length > 0) {
