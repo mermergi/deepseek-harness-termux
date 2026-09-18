@@ -4,7 +4,7 @@
 // Three unrelated Android limitations are handled here; each is listed with the
 // reason it exists and what it costs. `DSH_PERMISSION_MODE` is not a patch: the
 // shipped profile already reads it, and the launcher sets it.
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -787,6 +787,57 @@ if (existsSync(generalSettingsPath)) {
 // Scoped and quiet on purpose: a profile with no node_modules, or a plugin name
 // already taken in the install tree, is skipped rather than fought over.
 const profilesRoot = join(homedir(), '.dsh', 'profiles')
+
+// Sweep first for links of ours that no longer resolve. The loop below walks the
+// profile's node_modules, so it can only ever repair a plugin the profile still
+// lists — remove or rename the package and the dangling link is invisible to it,
+// and a dangling link still satisfies a plain exists() check on the loader's
+// side of the walk. Only entries that are symlinks into a profile are touched;
+// dsh's own packages are real directories and are left alone.
+let unlinked = 0
+if (existsSync(profilesRoot)) {
+  const profileNames = readdirSync(profilesRoot).filter((name) => !name.startsWith('.'))
+  const roots = [nodeModules]
+  for (const name of readdirSync(nodeModules)) {
+    if (name.startsWith('@')) roots.push(join(nodeModules, name))
+  }
+  for (const root of roots) {
+    let entries
+    try {
+      entries = readdirSync(root)
+    } catch {
+      continue
+    }
+    for (const name of entries) {
+      const target = join(root, name)
+      let stat
+      try {
+        stat = lstatSync(target)
+      } catch {
+        continue
+      }
+      if (!stat.isSymbolicLink() || existsSync(target)) continue
+      // Dangling. Remove it only when it points into a profile we own, so an
+      // unrelated broken link elsewhere in the tree is not ours to delete.
+      let pointsIntoProfile = false
+      try {
+        const real = readlinkSync(target)
+        pointsIntoProfile = profileNames.some((p) => real.startsWith(join(profilesRoot, p) + '/'))
+      } catch {
+        continue
+      }
+      if (!pointsIntoProfile) continue
+      try {
+        rmSync(target)
+        unlinked += 1
+        console.log(`profile plugin: removed dangling link for ${name}`)
+      } catch (error) {
+        console.warn(`profile plugin: could not remove dangling ${name}: ${error.message}`)
+      }
+    }
+  }
+}
+
 if (existsSync(profilesRoot)) {
   let linked = 0
   for (const entry of readdirSync(profilesRoot)) {
@@ -806,14 +857,29 @@ if (existsSync(profilesRoot)) {
       for (const pkgName of names) {
         const source = join(profileModules, pkgName)
         const target = join(nodeModules, pkgName)
-        let present = false
+        // lstat, not exists: a symlink of ours must be recognised even when its
+        // target just vanished. Reinstalling or updating a plugin can replace the
+        // profile directory, which leaves our link pointing at nothing — lstat
+        // still succeeds there, so an exists-only check would call it "present",
+        // skip it, and boot into the very failure this patch prevents.
+        let kind = 'absent'
         try {
-          lstatSync(target)
-          present = true
+          const stat = lstatSync(target)
+          kind = stat.isSymbolicLink() ? 'link' : 'entry'
         } catch {
-          present = false
+          kind = 'absent'
         }
-        if (present) continue
+        if (kind === 'entry') continue // dsh's own package: never touch
+        if (kind === 'link') {
+          // Keep a healthy link (idempotence); rebuild a dangling one.
+          if (existsSync(target)) continue
+          try {
+            rmSync(target)
+          } catch (error) {
+            console.warn(`profile plugin: could not replace dangling link ${pkgName}: ${error.message}`)
+            continue
+          }
+        }
         try {
           mkdirSync(dirname(target), { recursive: true })
           symlinkSync(source, target, 'dir')
