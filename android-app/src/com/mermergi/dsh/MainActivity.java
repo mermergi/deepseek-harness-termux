@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private static final String HANDOFF_KEY = "_Z2Fve3rcfvvahd4wDmLa0AvbxN061bp";
 
     private static final int PERMISSION_REQUEST = 88;
+    private static final int NOTIFICATION_PERMISSION_REQUEST = 89;
     private static final String PERMISSION_RUN_COMMAND = TermuxRun.PERMISSION;
     /** How long DSH may sit idle before the floating bubble hides itself. */
     private static final long BUBBLE_IDLE_TIMEOUT_MS = 90000L;
@@ -88,6 +89,8 @@ public class MainActivity extends Activity {
     private StatusPoller statusPoller;
     private long idleSince;
     private boolean bubbleDismissedForThisBackground;
+    /** One notification-permission prompt per launch; the platform drops overlapping ones. */
+    private boolean notificationAskedThisLaunch;
 
     // --- pull to refresh ---
     private float pullStartY;
@@ -99,7 +102,64 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
+        IslandNotifier.ensureChannel(this);
+        probeIslandSupport();
         handleIntent(getIntent());
+    }
+
+    /**
+     * Ask the system whether this app may drive Xiaomi's Super Island (焦点通知).
+     *
+     * HyperOS renders island notifications from ordinary notifications carrying a
+     * {@code miui.focus.param} extra — but only for apps the platform has granted the focus
+     * permission to, and Xiaomi grants that by application. Three documented queries answer
+     * whether it is available here; the answers go to the Termux log, because the app has no
+     * readable log of its own.
+     */
+    private void probeIslandSupport() {
+        StringBuilder sb = new StringBuilder("island");
+        String feature;
+        try {
+            Class<?> props = Class.forName("android.os.SystemProperties");
+            java.lang.reflect.Method getBoolean =
+                    props.getDeclaredMethod("getBoolean", String.class, boolean.class);
+            feature = String.valueOf(getBoolean.invoke(null, "persist.sys.feature.island", false));
+        } catch (Throwable t) {
+            feature = "err:" + t.getClass().getSimpleName();
+        }
+        sb.append(" feature=").append(feature);
+
+        String protocol;
+        try {
+            protocol = String.valueOf(Settings.System.getInt(
+                    getContentResolver(), "notification_focus_protocol", -1));
+        } catch (Throwable t) {
+            protocol = "err:" + t.getClass().getSimpleName();
+        }
+        sb.append(" protocol=").append(protocol);
+
+        String focus;
+        try {
+            Uri uri = Uri.parse("content://miui.statusbar.notification.public");
+            Bundle extras = new Bundle();
+            extras.putString("package", getPackageName());
+            Bundle result = getContentResolver().call(uri, "canShowFocus", null, extras);
+            focus = result == null
+                    ? "null"
+                    : String.valueOf(result.getBoolean("canShowFocus", false));
+        } catch (Throwable t) {
+            focus = "err:" + t.getClass().getSimpleName();
+        }
+        sb.append(" canShowFocus=").append(focus);
+
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            sb.append(" notifEnabled=").append(nm != null && nm.areNotificationsEnabled());
+        } catch (Throwable t) {
+            sb.append(" notifEnabled=err");
+        }
+        Diag.report(sb.toString());
     }
 
     @Override
@@ -140,27 +200,40 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- floating status bubble
 
-    /** Show the bubble and begin polling once the app leaves the foreground. */
+    /**
+     * Begin reporting the work state once the app leaves the foreground.
+     *
+     * The floating bubble and the island notification are independent outlets: the bubble needs
+     * the overlay permission, the island needs the notification permission, and either may be
+     * granted without the other. Both are driven by one poller, which therefore starts if either
+     * outlet is usable.
+     */
     private void startBackgroundStatus() {
         bubbleDismissedForThisBackground = false;
-        if (!Settings.canDrawOverlays(this)) return;
         if (!TermuxRun.hasPermission(this)) return;
-        if (bubble == null) {
-            bubble = new StatusBubble(this, new Runnable() {
-                @Override
-                public void run() {
-                    returnToApp();
-                }
-            });
+        boolean wantBubble = Settings.canDrawOverlays(this);
+        boolean wantIsland = IslandNotifier.notificationsAllowed(this);
+        if (!wantBubble && !wantIsland) return;
+
+        if (wantBubble) {
+            if (bubble == null) {
+                bubble = new StatusBubble(this, new Runnable() {
+                    @Override
+                    public void run() {
+                        returnToApp();
+                    }
+                });
+            }
+            try {
+                bubble.show();
+            } catch (Throwable t) {
+                bubble = null;
+            }
+            if (bubble != null) {
+                idleSince = 0L;
+                bubble.update(StatusBubble.STATE_UNKNOWN, "");
+            }
         }
-        try {
-            bubble.show();
-        } catch (Throwable t) {
-            bubble = null;
-            return;
-        }
-        idleSince = 0L;
-        bubble.update(StatusBubble.STATE_UNKNOWN, "");
         if (statusPoller == null) {
             statusPoller = new StatusPoller(this, new StatusPoller.Listener() {
                 @Override
@@ -173,6 +246,15 @@ public class MainActivity extends Activity {
     }
 
     private void onBackgroundStatus(int state) {
+        if (state == StatusBubble.STATE_WORKING) {
+            if (IslandNotifier.notificationsAllowed(this)) {
+                IslandNotifier.show(this, "工作中", "agent 正在执行任务");
+            }
+        } else if (IslandNotifier.notificationsAllowed(this)) {
+            // Anything that is not "working" clears the island rather than leaving a stale claim.
+            IslandNotifier.hide(this);
+        }
+
         if (bubble == null) return;
         long now = System.currentTimeMillis();
         if (state == StatusBubble.STATE_IDLE) {
@@ -201,6 +283,7 @@ public class MainActivity extends Activity {
             statusPoller = null;
         }
         if (bubble != null) bubble.hide();
+        IslandNotifier.hide(this);
     }
 
     private void returnToApp() {
@@ -217,15 +300,43 @@ public class MainActivity extends Activity {
     private void maybeOfferBubble() {
         android.content.SharedPreferences prefs =
                 getSharedPreferences("dsh_app", MODE_PRIVATE);
-        if (prefs.getBoolean("bubble_offered", false)) return;
-        if (Settings.canDrawOverlays(this)) return;
-        if (!TermuxRun.hasPermission(this)) return; // no point until Termux is reachable
+        boolean askedOverlay = prefs.getBoolean("bubble_offered", false);
+        boolean askedNotifications = prefs.getBoolean("notifications_offered", false);
         if (isSplashVisible()) return;
+        if (!TermuxRun.hasPermission(this)) return; // no point until Termux is reachable
+
+        // Notification permission is an ordinary runtime dialog. Ask on every launch while it is
+        // missing — Android stops showing the dialog after two refusals, so this cannot nag
+        // forever, and a single swallowed request (the RUN_COMMAND prompt can still be up when the
+        // page finishes loading) should not cost the island permanently.
+        if (!IslandNotifier.notificationsAllowed(this)
+                && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            boolean granted = checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Diag.report("notif-request granted=" + granted
+                    + " askedBefore=" + askedNotifications
+                    + " askedThisLaunch=" + notificationAskedThisLaunch);
+            if (!granted && !notificationAskedThisLaunch) {
+                notificationAskedThisLaunch = true;
+                prefs.edit().putBoolean("notifications_offered", true).apply();
+                try {
+                    IslandNotifier.ensureChannel(this);
+                    requestPermissions(
+                            new String[]{"android.permission.POST_NOTIFICATIONS"},
+                            NOTIFICATION_PERMISSION_REQUEST);
+                } catch (Throwable t) {
+                    Diag.report("notif-request-failed " + t.getClass().getSimpleName());
+                }
+            }
+        }
+
+        if (askedOverlay || Settings.canDrawOverlays(this)) return;
         prefs.edit().putBoolean("bubble_offered", true).apply();
         new AlertDialog.Builder(this)
                 .setTitle("后台显示工作状态？")
                 .setMessage("开启后，切到别的 App 时屏幕边上会有一个悬浮球，"
-                        + "显示 DSH 是在工作、空闲还是服务已停止。需要「显示在其他应用上层」权限。")
+                        + "显示 DSH 是在工作、空闲还是服务已停止。需要「显示在其他应用上层」权限。\n\n"
+                        + "另外，通知权限会用来在**灵动岛**上显示同样的状态，两项可以各自开关。")
                 .setPositiveButton("开启", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
@@ -271,6 +382,13 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) {
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Diag.report("notif-result granted=" + granted
+                    + " allowed=" + IslandNotifier.notificationsAllowed(this));
+            return;
+        }
         if (requestCode == PERMISSION_REQUEST) {
             // Granted or not, re-run the boot flow: it will either reach Termux now or fall
             // back to the "open Termux manually" screen.

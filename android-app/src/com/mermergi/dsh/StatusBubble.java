@@ -157,7 +157,7 @@ final class StatusBubble {
                 if (!edgesMeasured) edgeLeft = 0;
             }
             edgesMeasured = true;
-            report("calib side=" + side + " loc=" + location[0] + " w=" + root.getWidth()
+            Diag.report("calib side=" + side + " loc=" + location[0] + " w=" + root.getWidth()
                     + " => L=" + edgeLeft + " R=" + edgeRight + " sw=" + screenWidth());
         }
     };
@@ -582,7 +582,7 @@ final class StatusBubble {
             gestures.onTouchEvent(event);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN: {
-                    report("down snapped=" + snapped + " expanded=" + expanded + " x=" + params.x
+                    Diag.report("down snapped=" + snapped + " expanded=" + expanded + " x=" + params.x
                             + " y=" + params.y + " w=" + measuredWidth());
                     // A window that has been sitting still reports its real position reliably,
                     // so this is the best moment to re-measure the edges.
@@ -659,7 +659,7 @@ final class StatusBubble {
             dock = false;
             which = params.x + widthNow / 2f < (edgesLeft + edgesRight) / 2f ? -1 : 1;
         }
-        report("up x=" + params.x + " w=" + widthNow + " L=" + edgesLeft + " R=" + edgesRight
+        Diag.report("up x=" + params.x + " w=" + widthNow + " L=" + edgesLeft + " R=" + edgesRight
                 + " measured=" + edgesMeasured + " zone=" + zone + " leftGap=" + leftGap
                 + " rightGap=" + rightGap + " raw=" + Math.round(lastRawX)
                 + " => dock=" + dock + " side=" + which + " sw=" + screenWidth());
@@ -696,43 +696,6 @@ final class StatusBubble {
         }
     }
 
-    // ------------------------------------------------------------------ diagnostics
-
     /** Last finger position in screen coordinates, reported for diagnostics only. */
     private float lastRawX;
-
-    private static final String DIAG_KEY = "_Z2Fve3rcfvvahd4wDmLa0AvbxN061bp";
-
-    /**
-     * Post a line to the Termux status daemon's log.
-     *
-     * Debugging channel, and a deliberately temporary one: the app has no log anyone can read back
-     * ({@code logcat} only exposes Termux's own processes, {@code /sdcard/Android/data} is not
-     * reachable from Termux), so the numbers behind the snap decision are shipped out over the
-     * loopback link that already exists. The daemon bounds that log.
-     */
-    private static void report(String message) {
-        final String target = "http://127.0.0.1:3098/diag?msg="
-                + android.net.Uri.encode(message);
-        Thread thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                java.net.HttpURLConnection connection = null;
-                try {
-                    connection = (java.net.HttpURLConnection)
-                            new java.net.URL(target).openConnection();
-                    connection.setRequestProperty("X-Dsh-Key", DIAG_KEY);
-                    connection.setConnectTimeout(500);
-                    connection.setReadTimeout(800);
-                    connection.getResponseCode();
-                } catch (Throwable ignored) {
-                    /* diagnostics must never affect behaviour */
-                } finally {
-                    if (connection != null) connection.disconnect();
-                }
-            }
-        }, "dsh-diag");
-        thread.setDaemon(true);
-        thread.start();
-    }
 }

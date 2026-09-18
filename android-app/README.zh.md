@@ -208,6 +208,47 @@ up x=1019 w=349 L=0 R=1156 measured=true zone=192 leftGap=1019 rightGap=-212 raw
 代价是每次触摸多一个 loopback 请求，所以守护进程启动时会把日志截到最近 64KB。
 等这个悬浮球彻底稳定下来，这条通道可以摘掉。
 
+### 灵动岛 / 小米超级岛（部分可用）
+
+设备实测：`persist.sys.feature.island=1`、`notification_focus_protocol=3`、
+`canShowFocus=true`——**权限层面全绿，而且没有走小米的邮件申请流程**。
+
+接入方式（官方「客户端接入」）：普通通知 + 一个 extra，不需要 MiPush、不需要 root：
+
+```java
+notification.extras.putString("miui.focus.param", islandJson);
+notificationManager.notify(id, notification);
+```
+
+**实际结果**：状态栏出现「DSH 工作中」，**但岛上始终没有内容**。
+
+排查过的、可以排除的原因：
+
+| 怀疑 | 验证结果 |
+|---|---|
+| 通知权限没给 | 给了，`notifEnabled=true`，`island-send` 有投递记录 |
+| JSON 字段写错 | 逐字段对照公开组件模型修正后**仍不上岛**（见下） |
+| 岛区域内容为空 | 图标改 Bitmap、文字槽位冗余后**仍不上岛** |
+| 有用户侧开关没开 | 长按图标 → 通知管理里**没有**「焦点通知/超级岛」开关 |
+
+字段参考（来自第三方 HyperIsland ToolKit 的组件文档，与官方开发指南能对上；官方
+《模板库》PDF 只有设计稿、不含字段名）：
+
+- `param_island.islandPriority` **必填**，`2`=高优先级弹窗
+- `TextInfo` = `title`（必填）/ `content` / `showHighlightColor`；**没有** `frontTitle`、`useHighLight`
+- `BaseInfo.type`：`1`=标准（图标左）、`2`=横幅（图标右）
+- `SmallIslandArea` = `picInfo` 或 `combinePicInfo`
+- `BigIslandArea` = `imageTextInfoLeft` / `imageTextInfoRight` / `sameWidthDigitInfo` / `progressTextInfo` / `textInfo` / `picInfo` / `actions`
+
+**结论**：状态栏 ticker 生效说明**焦点通知通道本身是被接受的**（普通通知不会把文字放进状态栏），
+但**岛的渲染**这一层拿不到。最合理的解释是小米 FAQ 里那句「平台会配置权限，权限开通之后才能正常
+发送焦点通知」——`canShowFocus` 很可能只反映用户可见的通知开关，而岛渲染需要小米在平台侧为这个
+包名单独开通，侧载 app 没走过那个流程。旁证：网上能找到的第三方岛工具（HyperBridge、
+xiaoaiisland、课程表超级岛）**清一色是 LSPosed 模块**，靠 hook SystemUI 而非 API 实现。
+
+**当前保留的行为**：后台工作时投递一条焦点通知，顶栏显示「DSH 工作中」；转为空闲/服务停止时撤销。
+这已经实现了「切到别的 App 也能在屏幕顶部看到 agent 在工作」，只是没落在挖孔那一块。
+
 ### 关于悬浮球窗口本身
 
 它是 `TYPE_APPLICATION_OVERLAY` 窗口。这带来两个副作用，正好都用上了：进程不算普通后台缓存进程

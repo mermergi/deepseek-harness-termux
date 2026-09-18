@@ -10,6 +10,8 @@
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <!-- The floating work-status bubble; granted from a system settings screen, not a dialog. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Drives the Xiaomi Super Island notification that shows the work state. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Package visibility (API 30+): we must be able to resolve Termux and its API app. -->
     <queries>

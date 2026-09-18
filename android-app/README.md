@@ -77,6 +77,26 @@ The last step uses the committed `prebuilt/dsh.apk`, so the 237 MB build toolcha
 that committed copy after every successful build, so seeing it in `git status` means source and
 prebuilt have moved apart.
 
+## Xiaomi Super Island (partial)
+
+The device reports `persist.sys.feature.island=1`, `notification_focus_protocol=3` and
+`canShowFocus=true`, and HyperOS renders focus notifications from an ordinary notification carrying
+a `miui.focus.param` extra — no MiPush, no root. Verified outcome: **the status-bar ticker shows
+"DSH 工作中", the island itself stays empty**, even after correcting the payload field-for-field
+against the published component model (the missing required `islandPriority`, the non-existent
+`TextInfo.frontTitle`/`useHighLight`, and `BaseInfo.type`).
+
+Since an ordinary notification cannot put text in the status bar, the ticker proves the focus
+channel is accepted; it is the island *rendering* that is unavailable. That matches Xiaomi's own
+FAQ line that the platform configures the permission per app after an application — `canShowFocus`
+most likely reflects the user-visible notification toggle, not island capability. Supporting
+evidence: every third-party island tool found is an LSPosed module hooking SystemUI rather than
+using the API.
+
+The shipped behaviour is therefore the status-bar variant: a focus notification while the agent is
+working, withdrawn when it goes idle. Details and the full field reference are in
+[README.zh.md](README.zh.md).
+
 ## Two traps worth knowing about
 
 **`$TMPDIR` gets wiped while the server is still writing to it.** Termux clears `$PREFIX/tmp`
