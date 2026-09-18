@@ -599,6 +599,101 @@ if (existsSync(basePatchPath)) {
   console.log(`hmr: ${basePatchPath} absent; nothing to patch`)
 }
 
+// 12. Sidebar panel toggle. 0.1.6-alpha.2 added the Plugins entry to the sidebar
+// rail. Its row calls `selectPanel(id)` unconditionally, so tapping the icon a
+// second time re-selects the same panel instead of closing it — and with the
+// sidebar already open, the two panes compete for width and the plugin page is
+// squeezed into a vertical sliver. Users read that as "the icon does not close".
+//
+// The host already supports closing: `selectPanel(null)` means "return to the
+// Conversation" (layout/lib/client.js:417-422 accepts null, and
+// `activePanelId = null` is the documented no-panel state). Nothing upstream
+// ever passes it from this row, so the UI simply cannot express "close".
+//
+// Fix: toggle. Passing null when the row is already active restores the
+// conversation; every other panel keeps working unchanged.
+//
+// Not Android-specific — any platform with the Plugins entry has this — but it
+// is the sidebar's own row, so the patch is cheap and self-contained here.
+const sidebarClientPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-sidebar', 'lib', 'client.js')
+if (existsSync(sidebarClientPath)) {
+  const source = readFileSync(sidebarClientPath, 'utf8')
+  if (source.includes('ANDROID_PATCH_PANEL_TOGGLE')) {
+    // already patched
+  } else {
+    // The indent is five tabs and the `onClick` wrapper is what makes this
+    // unique: the bare `selectPanel(id);` also appears in the props wiring.
+    const anchor = '\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tselectPanel(id);\n\t\t\t\t\t},'
+    const replacement = [
+      '\t\t\t\t\t// ANDROID_PATCH_PANEL_TOGGLE: re-tapping the active panel returns to the conversation.',
+      '\t\t\t\t\tonClick: () => {',
+      '\t\t\t\t\t\tselectPanel(active ? null : id);',
+      '\t\t\t\t\t},',
+    ].join('\n')
+    if (!source.includes(anchor)) {
+      problems.push(`panel toggle: anchor missing in ${sidebarClientPath} (sidebar row layout changed)`)
+    } else {
+      writeFileSync(sidebarClientPath, source.replace(anchor, replacement))
+      console.log('sidebar: panel icons toggle (tapping the active one closes it)')
+    }
+  }
+} else {
+  // Pre-alpha.2 releases have no plugin panel in the rail; nothing to toggle.
+  console.log(`sidebar: ${sidebarClientPath} absent; nothing to patch`)
+}
+
+// 13. Sidebar icon tooltips never dismiss on a touch screen.
+//
+// The primitive shows a bubble on focus and hides it on blur, assuming a
+// pointer: hover in, hover out. A finger tap fires focus (bubble appears) but
+// never mouseleave, and the button then keeps focus, so no blur arrives either.
+// The bubble stays until the user taps something unrelated — which is exactly
+// what "点击后有个文字在那里" describes.
+//
+// Fixed here rather than in the primitive, because the primitive cannot be
+// patched at all: the client bundle ships a prebuilt copy of
+// dsh-client-ui-primitives, so edits to its lib/index.js never reach the
+// browser. That was learned the hard way — a fix written there showed 0
+// occurrences in the served bundle, while the same kind of edit to this file
+// (patch 12) appeared immediately. Patch only what the bundler reads.
+//
+// Disabling is the honest fix rather than a workaround. A tooltip is a
+// hover affordance; there is no hover on a touch screen, so the bubble can only
+// ever appear as a side effect of tapping and then linger. Every one of these
+// buttons already carries `aria-label`, so screen readers lose nothing, and the
+// expanded sidebar shows the same labels as visible text (`disabled: wide`
+// already suppressed the bubble in that state anyway).
+//
+// The rows are distinguished by their indentation: the file has five
+// `delayMs: 500,` lines at five distinct tab depths, and each one belongs to a
+// sidebar Tooltip. `disabled: wide,` is dropped first so the key is not set
+// twice.
+const sidebarTooltipPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-sidebar', 'lib', 'client.js')
+if (existsSync(sidebarTooltipPath)) {
+  const source = readFileSync(sidebarTooltipPath, 'utf8')
+  if (source.includes('ANDROID_PATCH_NO_TOOLTIP')) {
+    // already patched
+  } else {
+    const withoutWide = source.split('disabled: wide,\n').join('')
+    const dropped = source.length - withoutWide.length
+    // Insert `disabled: true,` after each delayMs line, keeping its indentation.
+    let added = 0
+    const patched = withoutWide.replace(/\n(\t+)delayMs: 500,\n/g, (_match, indent) => {
+      added += 1
+      return `\n${indent}delayMs: 500,\n${indent}// ANDROID_PATCH_NO_TOOLTIP: a tap cannot dismiss a hover bubble; suppress it.\n${indent}disabled: true,\n`
+    })
+    if (added === 0) {
+      problems.push(`sidebar tooltips: no "delayMs: 500," anchors in ${sidebarTooltipPath}`)
+    } else {
+      writeFileSync(sidebarTooltipPath, patched)
+      const note = dropped > 0 ? `, replaced ${dropped / 'disabled: wide,\n'.length} existing gate(s)` : ''
+      console.log(`sidebar tooltips: disabled ${added} hover bubble(s)${note}`)
+    }
+  }
+} else {
+  problems.push(`sidebar tooltips: ${sidebarTooltipPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
