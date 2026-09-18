@@ -232,6 +232,18 @@ node ~/dsh/android-fix.mjs
 
 When you launch through this repository's `start_dsh.sh`, that step happens automatically.
 
+Before that, two things to know about *what* you install:
+
+- **Do not install `0.1.6-alpha.2`.** It wants a `node-addon-require-builtin-android-arm64` native binding at boot. That package ships macOS/Linux/Windows only, has no sources to build here, and offers no JS fallback, so dsh stops before it serves.
+- **Pin the whole tree, not just the top package.** `@deepseek-ai/dsh@0.1.6-alpha.1` declares its sibling packages as `^0.1.6-alpha.1`, and a plain install resolves those to `alpha.2` entries whose exports the core still imports (`watchUserPatches`), so even a rolled-back install will not start. Install once, with a cutoff from before those siblings were published:
+
+```sh
+npm install --before=2026-09-16T23:59:00Z @deepseek-ai/dsh@0.1.6-alpha.1 @img/sharp-wasm32 sharp
+node ~/dsh/android-fix.mjs
+```
+
+Keep `package-lock.json`: it is what holds that tree together. If it breaks anyway, `npm ci` restores it.
+
 One of those patches is a **client-bundle combo cache**: at startup dsh re-assembles every client bundle once per plugin-registration wave (measured here: 435 calls, ~10 s of an ~11 s boot), and the cache cuts a cold start from ~10.6 s to ~8 s. It only affects speed, never correctness, so it is best-effort: when an anchor has moved in newer code it prints one warning instead of blocking startup.
 
 dsh is in developer preview and upgrades may bring breaking changes. If the script reports something like `missing ...`, an anchor string in the newer code has changed and the patch needs adjusting against it; required patches do not skip silently — the script names the file that failed to match.

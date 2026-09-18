@@ -229,6 +229,18 @@ node ~/dsh/android-fix.mjs
 
 用本仓库的 `start_dsh.sh` 启动时这步会自动完成。
 
+在那之前，有两点关于**装哪个版本**要知道：
+
+- **不要装 `0.1.6-alpha.2`。** 它启动时要一个 `node-addon-require-builtin-android-arm64` 原生绑定；那个包只发布 macOS/Linux/Windows，没有源码可在这里编译，也没有 JS 回退，所以 dsh 在提供服务前就停了。
+- **要钉就钉整棵树，不能只钉顶层包。** `@deepseek-ai/dsh@0.1.6-alpha.1` 把它的兄弟包声明成 `^0.1.6-alpha.1`，普通安装会解析到 `alpha.2` 的那批，而它们删掉了核心仍在 import 的导出（`watchUserPatches`）——于是连回滚后的安装都起不来。要一次装完，并用一个早于那批兄弟包发布的时间切点：
+
+```sh
+npm install --before=2026-09-16T23:59:00Z @deepseek-ai/dsh@0.1.6-alpha.1 @img/sharp-wasm32 sharp
+node ~/dsh/android-fix.mjs
+```
+
+保留 `package-lock.json`：就是它把整棵树钉住的。真出问题就用 `npm ci` 恢复。
+
 补丁里有一个**客户端 bundle 组合缓存**：dsh 启动时每注册一批插件就会重新组装一次全部客户端 bundle（本机实测 435 次调用、约占启动 10 秒），缓存把冷启动从约 10.6 秒压到约 8 秒。它只影响速度、不影响正确性，因此是尽力而为的：新版代码锚点变了只打印一行警告，不会拦住启动。
 
 dsh 目前处于 developer preview，升级可能带来破坏性变更。如果脚本报 `missing ...` 之类，说明新版代码里的锚点字符串变了，需要对照新版调整补丁；必需补丁不会静默跳过，而是明确报出哪个文件没匹配上。
