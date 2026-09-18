@@ -77,7 +77,7 @@ The last step uses the committed `prebuilt/dsh.apk`, so the 237 MB build toolcha
 that committed copy after every successful build, so seeing it in `git status` means source and
 prebuilt have moved apart.
 
-## Xiaomi Super Island (partial)
+## Xiaomi Super Island (status bar only — closed)
 
 The device reports `persist.sys.feature.island=1`, `notification_focus_protocol=3` and
 `canShowFocus=true`, and HyperOS renders focus notifications from an ordinary notification carrying
@@ -96,6 +96,10 @@ using the API.
 The shipped behaviour is therefore the status-bar variant: a focus notification while the agent is
 working, withdrawn when it goes idle. Details and the full field reference are in
 [README.zh.md](README.zh.md).
+
+**Closed, deliberately.** The one remaining route is an application on Xiaomi's developer platform
+for this package name, which a side-loaded app does not have and is not worth pursuing for a status
+indicator. Everything up to that point is already shipped and verified.
 
 ## Three traps worth knowing about
 
