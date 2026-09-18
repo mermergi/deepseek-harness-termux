@@ -506,6 +506,99 @@ const SINGLE_COMBO_CACHE_LIMIT = 256;
   console.warn(`client-modules: ${clientModulesPath} missing; skipping combo cache`)
 }
 
+// 10. Profile resolution mode. 0.1.6-alpha.2 changed the default in
+// `profile-boot-<hash>.js` from "link" to "runtime":
+//
+//   alpha.1  options.resolutionMode ?? "link"
+//   alpha.2  options.resolutionMode ?? "runtime"
+//
+// "runtime" builds a resolution generation and hands it to the PluginPackages
+// plugin, whose constructor then reaches `installProfileResolution()` ->
+// `internalModules()`, which does an *unguarded*
+// `require("node-addon-require-builtin")`. That addon publishes darwin/linux/
+// win32 bindings only — there is no android-arm64 build, and npm has never had
+// one — so boot dies with
+// `host preparation failed: No usable native binding found for
+//  node-addon-require-builtin-android-arm64`.
+//
+// "link" passes no generation, PluginPackages returns early, and the addon is
+// never touched. Nothing else in the boot path needs it: the one other consumer
+// (cordis-plugin-loader's requireInternal) already prefers --expose-internals
+// and wraps both paths in try/catch. So restore the alpha.1 default.
+//
+// This is the *only* place the default is set, and bin.js never passes
+// resolutionMode, so the fallback is always what runs.
+const profileBootDir = join(nodeModules, '@deepseek-ai', 'dsh', 'lib')
+// Never scan node_modules wholesale; profile-boot is emitted as a hashed chunk
+// whose name changes between releases.
+const profileBootFiles = existsSync(profileBootDir)
+  ? readdirSync(profileBootDir).filter((name) => /^profile-boot-.*\.js$/.test(name))
+  : []
+const RUNTIME_DEFAULT = 'options.resolutionMode ?? "runtime"'
+const LINK_DEFAULT = 'options.resolutionMode ?? "link"'
+let resolutionPatched = 0
+for (const name of profileBootFiles) {
+  const file = join(profileBootDir, name)
+  const source = readFileSync(file, 'utf8')
+  // The chunk that imports PluginPackages is the one that sets the default.
+  if (!source.includes(RUNTIME_DEFAULT)) continue
+  writeFileSync(file, source.replaceAll(RUNTIME_DEFAULT, LINK_DEFAULT))
+  resolutionPatched += 1
+}
+if (resolutionPatched > 0) {
+  console.log(`profile resolution: default resolutionMode runtime -> link (${resolutionPatched} chunk(s))`)
+} else if (profileBootFiles.length === 0) {
+  problems.push(`profile resolution: no profile-boot chunk under ${profileBootDir}`)
+} else if (profileBootFiles.some((name) => readFileSync(join(profileBootDir, name), 'utf8').includes(LINK_DEFAULT))) {
+  // already patched
+} else {
+  // Pre-alpha.2 releases default to "link" already; nothing to do.
+  console.log('profile resolution: default already link; nothing to patch')
+}
+
+// 11. HMR service. 0.1.6-alpha.2 hard-codes @deepseek-ai/dsh-hmr into
+// dsh-base/cordis.patch.yml, so the older `patchReload: "startup"` trick (see
+// patch 4) no longer keeps it out of the tree. The plugin's constructor throws
+// `--expose-internals is required for HMR service` when the Cordis loader has no
+// `internal` handle — which on Android it cannot get, because that handle comes
+// from the same missing addon.
+//
+// Dropping the patch entry is the smaller change: HMR only reloads profile
+// patch files while dsh is running, which matters to developers editing live
+// profiles, not to a phone that starts the server once. Boot must not depend on
+// a native binding that does not exist for this platform.
+const basePatchPath = join(nodeModules, '@deepseek-ai', 'dsh-base', 'cordis.patch.yml')
+if (existsSync(basePatchPath)) {
+  const source = readFileSync(basePatchPath, 'utf8')
+  if (source.includes('ANDROID_PATCH_NO_HMR')) {
+    // already patched
+  } else {
+    const lines = source.split('\n')
+    // Upstream quotes the name with single quotes today; accept either style so a
+    // cosmetic change upstream cannot silently turn this patch into a no-op.
+    const at = lines.findIndex((line) => /['"]@deepseek-ai\/dsh-hmr['"]/.test(line))
+    // The entry is a 2-line YAML mapping: `- name: '@deepseek-ai/dsh-hmr'`
+    // followed by an indented `config:` block. Drop the whole entry.
+    if (at < 0) {
+      // Normal on alpha.1, whose dsh-base has no hmr entry at all — nothing to
+      // do there. It would only be suspicious if the package itself depended on
+      // hmr while shipping no entry for it, which is not a shape we can tell
+      // apart from here, so stay quiet rather than block a working install.
+      console.log('hmr: no dsh-hmr entry in dsh-base; nothing to remove')
+    } else {
+      let end = at + 1
+      while (end < lines.length && /^\s+\S/.test(lines[end]) && !/^\s*-\s/.test(lines[end])) end += 1
+      const start = /^\s*-\s/.test(lines[at]) ? at : at - 1
+      lines.splice(start, end - start, `${lines[start].slice(0, lines[start].length - lines[start].trimStart().length)}# ANDROID_PATCH_NO_HMR: dropped '@deepseek-ai/dsh-hmr' (needs the android-less node-addon-require-builtin)`)
+      writeFileSync(basePatchPath, lines.join('\n'))
+      console.log('hmr: dropped dsh-hmr from dsh-base patch (needs a binding android does not have)')
+    }
+  }
+} else {
+  // Pre-alpha.2 releases shipped no such patch file; nothing to remove.
+  console.log(`hmr: ${basePatchPath} absent; nothing to patch`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
