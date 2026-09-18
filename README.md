@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **15 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **16 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
 
-Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page.
+Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device.
 
 ## Table of contents
 
@@ -213,7 +213,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 ## Patch list
 
-15 in total; the numbers match the comments in `android-fix.mjs`.
+16 in total; the numbers match the comments in `android-fix.mjs`.
 
 **Android platform gaps** (1–8):
 
@@ -241,7 +241,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
 | 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
 
-**UI and plugins** (12–15):
+**UI, plugins and toolchain** (12–16):
 
 | # | Symptom | Fix |
 |---|---|---|
@@ -249,6 +249,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 13 | An icon tooltip never goes away after a tap | disable the sidebar's five tooltips (no hover on a touch screen, so the bubble can only linger) |
 | 14 | Restarting means reaching for a terminal | a "Restart DSH service" button at the bottom of the General settings page (native ↔ web bridge, with confirmation) |
 | 15 | Boot fails after installing a plugin: `Cannot find package '<plugin>'` | link plugins installed into a profile into the install directory; also sweep dangling links |
+| 16 | A plugin will not install: `node-pty install … exited with exit status: 127` | repair the global `node-gyp`: point its shebang at the Termux `env`, and turn the PATH entry from a copy back into a symlink |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
@@ -259,6 +260,19 @@ The reasoning, the trade-offs and the traps are written up in the comments of `a
 Install from the plugin market in the UI, then **restart once** (Settings → General → the button at the bottom). The patch links the plugin into the install directory — without that link the loader cannot find it, the whole plugin tree fails, and nothing boots.
 
 Install **from npm** (`pnpm add dshmarket`), not from the **git URL** the market offers: a git install triggers pnpm's build-script allowlist (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`), and once allowed it needs to run `tsc` on the phone — but git dependencies do not get their `devDependencies`, so you get `tsc: not found`. The npm package is already built and needs no compilation.
+
+**Some plugins carry a native dependency** (`node-pty` is the common one). No Android prebuild exists for it, so it has to be compiled on the phone. Three things have to line up:
+
+1. The build tools: `pkg install python clang make` (usually already present).
+2. pnpm permission for that dependency to run its build script — in the profile's `pnpm-workspace.yaml`:
+   ```yaml
+   allowBuilds:
+     node-pty: true
+   ```
+   Without it you get `ERR_PNPM_IGNORED_BUILDS`.
+3. A working `node-gyp` — **patch 16 repairs it automatically**.
+
+With all three, the compile runs on the device (measured here: `node-pty@1.1.0` in about 2.4 s), no prebuilt package needed.
 
 ## Restarting
 

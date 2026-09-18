@@ -899,6 +899,76 @@ if (existsSync(profilesRoot)) {
   }
 }
 
+// 16. Repair the global node-gyp so plugin installs can compile native deps.
+//
+// Some plugins pull in a native module that has no prebuilt for Android and
+// compiles on the device instead (node-pty is the common one). That compile
+// runs `node-gyp`, and on Termux the global one is broken in two ways at once.
+//
+// - Its shebang is `#!/usr/bin/env node`, and Termux has no /usr/bin/env, so
+//    every invocation dies with a bare
+//    `bad interpreter: No such file or directory` — surfaced to pnpm as exit
+//    status 127. npm and npx avoid this only because their shebangs carry the
+//    absolute Termux path.
+// - npm left `$PREFIX/bin/node-gyp` as a *copy* of
+//    `$PREFIX/lib/node_modules/node-gyp/bin/node-gyp.js` rather than the usual
+//    symlink. The script does `require('../')`, which resolves relative to the
+//    copy's own directory, so it looks for env-paths under $PREFIX instead of
+//    inside the package and dies with `Cannot find module 'env-paths'`.
+//
+// Both are outside this install tree, which is why they are repaired here
+// rather than in a profile: pnpm spawns `node-gyp` from PATH, so the PATH entry
+// itself has to work. Idempotent, and silent when node-gyp is absent — it is
+// only needed for plugins that build native code.
+const prefixBin = dirname(process.execPath)
+const gypEntry = join(prefixBin, '..', 'lib', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+const gypShim = join(prefixBin, 'node-gyp')
+if (existsSync(gypEntry)) {
+  // - shebang
+  const termuxEnv = join(prefixBin, 'env')
+  if (existsSync(termuxEnv)) {
+    const source = readFileSync(gypEntry, 'utf8')
+    const firstLine = source.slice(0, source.indexOf('\n'))
+    if (firstLine === '#!/usr/bin/env node') {
+      writeFileSync(gypEntry, `#!${termuxEnv} node${source.slice(firstLine.length)}`)
+      console.log('node-gyp: shebang rewritten to the Termux env (there is no /usr/bin/env)')
+    }
+  }
+  // - shim must be a symlink so `require('../')` lands inside the package
+  let shimKind = 'absent'
+  try {
+    shimKind = lstatSync(gypShim).isSymbolicLink() ? 'link' : 'file'
+  } catch {
+    shimKind = 'absent'
+  }
+  if (shimKind === 'file') {
+    let isOurCopy = false
+    try {
+      isOurCopy = readFileSync(gypShim, 'utf8').includes("process.title = 'node-gyp'")
+    } catch {
+      isOurCopy = false
+    }
+    if (isOurCopy) {
+      try {
+        rmSync(gypShim)
+        symlinkSync(gypEntry, gypShim)
+        console.log('node-gyp: PATH entry relinked to the package (was a copy that could not resolve its own deps)')
+      } catch (error) {
+        console.warn(`node-gyp: could not relink ${gypShim}: ${error.message}`)
+      }
+    }
+  } else if (shimKind === 'link' && !existsSync(gypShim)) {
+    // Dangling after a reinstall: rebuild it.
+    try {
+      rmSync(gypShim)
+      symlinkSync(gypEntry, gypShim)
+      console.log('node-gyp: rebuilt a dangling PATH entry')
+    } catch (error) {
+      console.warn(`node-gyp: could not rebuild ${gypShim}: ${error.message}`)
+    }
+  }
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
