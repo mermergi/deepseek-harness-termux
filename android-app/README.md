@@ -97,7 +97,7 @@ The shipped behaviour is therefore the status-bar variant: a focus notification 
 working, withdrawn when it goes idle. Details and the full field reference are in
 [README.zh.md](README.zh.md).
 
-## Two traps worth knowing about
+## Three traps worth knowing about
 
 **`$TMPDIR` gets wiped while the server is still writing to it.** Termux clears `$PREFIX/tmp`
 when the Termux app process restarts, but a running dsh keeps its file descriptor:
@@ -118,6 +118,26 @@ java.lang.SecurityException: Permission Denial: package=com.android.shell does n
 
 That is why the Termux to app hand-off is a loopback HTTP endpoint rather than an intent.
 
+**Xiaomi's file manager returns a picked file with no result URI.** Attaching a file in the WebView
+is `onShowFileChooser` → `startActivityForResult` → `onActivityResult` → the URI handed to the page.
+On this device the third step arrives as `RESULT_OK` with an Intent whose `getData()` is null and
+whose `ClipData` has no URI either, so `FileChooserParams.parseResult` reports an empty selection
+and the page silently attaches nothing:
+
+```
+fc result: code=-1 data=present action=null type=null uri=null clip=1
+  extras={ android.intent.extra.STREAM=List(1)[content://com.android.fileexplorer.documents/document/primary%3A%2F…] }
+```
+
+The file is in the extras. `recoverUris()` therefore falls back to `EXTRA_STREAM`, then to any other
+extra holding a URI or a path, testing each candidate for readability first — an unreadable URI
+reaches the page as the same empty selection. The same class of bug is reported against other Xiaomi
+devices ([SO 55453196](https://stackoverflow.com/questions/55453196/)); there, picking *Documents*
+worked while *File Manager* did not.
+
+Because there is no log to read back, the app forwards every picker attempt and result, plus the
+page's `console`, to the same diag sink the status daemon writes (`~/.dsh-app/status.log`).
+
 ## Troubleshooting
 
 | Symptom | Where to look |
@@ -127,3 +147,5 @@ That is why the Termux to app hand-off is a loopback HTTP endpoint rather than a
 | Did the app actually reach Termux | `bridge invoked` in `bridge.log` |
 | Server up but no token available | `no usable token in any log` in `bridge.log` |
 | Force a fresh token | `bash ~/.dsh-app/bridge.sh --restart` |
+| Picking a file attaches nothing | `grep 'diag: fc' ~/.dsh-app/status.log` |
+| Any page-side error | `grep 'diag: console' ~/.dsh-app/status.log` |

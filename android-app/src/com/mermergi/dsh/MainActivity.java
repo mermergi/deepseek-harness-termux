@@ -80,6 +80,15 @@ public class MainActivity extends Activity {
     private Button restartButton;
 
     private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
+    /** True from the moment a picker is launched until its result is handled. */
+    private boolean filePickerLaunched;
+    /** The request's own parameters, kept so a retry can rebuild the same picker intent. */
+    private int pickerMode = WebChromeClient.FileChooserParams.MODE_OPEN;
+    private String[] pickerAccept;
+    /** The action the outstanding picker was launched with. */
+    private String pickerAction = Intent.ACTION_OPEN_DOCUMENT;
+    /** One retry per request: only a picker that answers OK with nothing is worth retrying. */
+    private boolean pickerRetried;
     private volatile boolean bridgeDispatchFailed;
     private volatile boolean permissionRequested;
     private volatile int bootGeneration;
@@ -183,6 +192,12 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (web != null) web.onResume();
+        // onActivityResult lands before onResume, so a picker still outstanding here means the
+        // platform dropped its result: the page is left waiting and silently attaches nothing.
+        // The flag is deliberately left set so the next real result still clears it.
+        if (filePickerLaunched && pendingFileChooser != null && !pickerRetried) {
+            Diag.report("fc: resumed with a picker outstanding, so no result was delivered");
+        }
         stopBackgroundStatus();
         // The user is looking at the app: a good moment to make sure the status endpoint
         // exists, since starting a service in another app is unrestricted from the foreground.
@@ -368,15 +383,192 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {        if (requestCode == FILE_CHOOSER_REQUEST) {
-            if (pendingFileChooser != null) {
-                pendingFileChooser.onReceiveValue(
-                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
-                pendingFileChooser = null;
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILE_CHOOSER_REQUEST) {
+            filePickerLaunched = false;
+            Uri[] uris = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            // Xiaomi's file manager answers OK with the selection in the Intent's extras and
+            // getData() left empty, which the standard parser throws away. Recovering from the
+            // extras is what turns that answer back into an attachment.
+            boolean recovered = false;
+            if ((uris == null || uris.length == 0) && resultCode == RESULT_OK) {
+                uris = recoverUris(data);
+                recovered = uris != null && uris.length > 0;
+                if (!recovered) uris = null;
             }
+            int count = uris == null ? 0 : uris.length;
+            // Reading one byte here separates "the picker gave us nothing" from "the WebView could
+            // not read what it gave us": both leave the page with an empty file list and the same
+            // symptom, but only the second one is ours to work around.
+            StringBuilder detail = new StringBuilder("fc result: code=").append(resultCode)
+                    .append(" data=").append(data == null ? "null-intent" : "present")
+                    .append(data == null ? "" : describeResult(data))
+                    .append(recovered ? " recovered=" + count : "")
+                    .append(" parsed=").append(count);
+            for (int i = 0; i < count; i++) {
+                detail.append(" | ").append(uris[i]).append(" read=").append(probeReadable(uris[i]));
+            }
+            Diag.report(detail.toString());
+            // A picker that answers OK and hands back nothing is not the user cancelling: cancel
+            // arrives as resultCode 0. Relaunching under the other document action is both the
+            // recovery and the experiment, since the two actions resolve to different pickers.
+            if (count == 0 && resultCode == RESULT_OK && !pickerRetried
+                    && pendingFileChooser != null) {
+                pickerRetried = true;
+                Diag.report("fc result: OK with no usable document; retrying the other picker");
+                Toast.makeText(this, "选择器没有返回文件，换一个再试", Toast.LENGTH_SHORT).show();
+                launchPicker(Intent.ACTION_GET_CONTENT.equals(pickerAction)
+                        ? Intent.ACTION_OPEN_DOCUMENT : Intent.ACTION_GET_CONTENT);
+                return;
+            }
+            if (pendingFileChooser != null) {
+                pendingFileChooser.onReceiveValue(count == 0 ? null : uris);
+                pendingFileChooser = null;
+            } else {
+                Diag.report("fc result: nothing was waiting for the picker");
+            }
+            if (count == 0) Toast.makeText(this, "没有选中文件", Toast.LENGTH_SHORT).show();
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /**
+     * Recover the picked documents from a result that {@code FileChooserParams.parseResult} rejects.
+     *
+     * Xiaomi's file manager returns {@code RESULT_OK} with an Intent that carries the selection in
+     * its extras and leaves {@code getData()} null, so the standard parser finds nothing even
+     * though the user did pick a file. The stream extra is the documented place for a shared
+     * document and is checked first; anything else in the extras that holds a readable URI is
+     * accepted after it, so the exact key does not have to be known in advance.
+     *
+     * @return the recovered documents, or null when the result carries none.
+     */
+    private Uri[] recoverUris(Intent data) {
+        if (data == null) return null;
+        java.util.ArrayList<Uri> found = new java.util.ArrayList<Uri>();
+        android.os.Bundle extras = data.getExtras();
+        if (extras != null) {
+            collectUris(extras.get(Intent.EXTRA_STREAM), found);
+            for (String key : extras.keySet()) {
+                Object value = extras.get(key);
+                if (value instanceof Uri) {
+                    addIfReadable((Uri) value, found);
+                } else if (value instanceof String) {
+                    addIfReadable(asDocumentUri((String) value), found);
+                }
+            }
+        }
+        android.content.ClipData clip = data.getClipData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                addIfReadable(clip.getItemAt(i).getUri(), found);
+            }
+        }
+        return found.isEmpty() ? null : found.toArray(new Uri[0]);
+    }
+
+    /** Add a URI and everything a stream extra may nest it in. */
+    private void collectUris(Object value, java.util.ArrayList<Uri> into) {
+        if (value instanceof Uri) {
+            addIfReadable((Uri) value, into);
+            return;
+        }
+        if (value instanceof java.util.List) {
+            java.util.List<?> items = (java.util.List<?>) value;
+            for (int i = 0; i < items.size(); i++) collectUris(items.get(i), into);
+            return;
+        }
+        if (value instanceof Object[]) {
+            Object[] items = (Object[]) value;
+            for (int i = 0; i < items.length; i++) collectUris(items[i], into);
+        }
+    }
+
+    /** @return the string as a document URI, or null when it does not name a readable file. */
+    private Uri asDocumentUri(String text) {
+        if (text == null || text.isEmpty()) return null;
+        if (text.startsWith("content://") || text.startsWith("file://")) {
+            Uri uri = Uri.parse(text);
+            return "ok".equals(probeReadable(uri)) ? uri : null;
+        }
+        if (text.startsWith("/")) {
+            // A bare path is only usable when this app can actually open it; a path in shared
+            // storage is not readable under scoped storage, and saying so is the useful answer.
+            java.io.File file = new java.io.File(text);
+            if (!file.isFile()) return null;
+            Uri uri = Uri.fromFile(file);
+            return "ok".equals(probeReadable(uri)) ? uri : null;
+        }
+        return null;
+    }
+
+    private void addIfReadable(Uri uri, java.util.ArrayList<Uri> into) {
+        if (uri == null || into.contains(uri)) return;
+        // Keep only what this app can open: handing the page an unreadable URI produces an empty
+        // file list, which is the symptom being fixed here.
+        if ("ok".equals(probeReadable(uri))) into.add(uri);
+    }
+
+    /** @return a bounded description of a result Intent, including every extra it carries. */
+    private String describeResult(Intent data) {
+        StringBuilder out = new StringBuilder(" action=").append(data.getAction())
+                .append(" type=").append(data.getType())
+                .append(" uri=").append(data.getData())
+                .append(" clip=").append(data.getClipData() == null
+                        ? 0 : data.getClipData().getItemCount());
+        android.os.Bundle extras = data.getExtras();
+        if (extras == null || extras.isEmpty()) return out.append(" extras={}").toString();
+        out.append(" extras={");
+        for (String key : extras.keySet()) {
+            if (out.length() > 500) {
+                out.append(" ...");
+                break;
+            }
+            out.append(' ').append(key).append('=').append(brief(extras.get(key)));
+        }
+        return out.append('}').toString();
+    }
+
+    /** @return a short printable form of one extra value, without dumping large payloads. */
+    private String brief(Object value) {
+        if (value == null) return "null";
+        if (value instanceof String || value instanceof Uri) return shorten(String.valueOf(value));
+        if (value instanceof java.util.List) {
+            java.util.List<?> items = (java.util.List<?>) value;
+            return "List(" + items.size() + ")" + (items.isEmpty() ? "" : "[" + brief(items.get(0)) + "]");
+        }
+        if (value instanceof Object[]) {
+            Object[] items = (Object[]) value;
+            return "Array(" + items.length + ")" + (items.length == 0 ? "" : "[" + brief(items[0]) + "]");
+        }
+        return value.getClass().getSimpleName();
+    }
+
+    private String shorten(String text) {
+        if (text == null) return "null";
+        return text.length() <= 140 ? text : text.substring(0, 140) + "...";
+    }
+
+    /** @return whether this app itself can open a picked document, for the diagnostic log. */
+    private String probeReadable(Uri uri) {
+        java.io.InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) return "no-stream";
+            byte[] one = new byte[1];
+            return in.read(one) < 0 ? "empty" : "ok";
+        } catch (Throwable t) {
+            return "fail(" + t.getClass().getSimpleName() + ")";
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Throwable ignored) {
+                    // A probe that cannot close is still a usable answer.
+                }
+            }
+        }
     }
 
     @Override
@@ -707,7 +899,11 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setTextZoom(100);
-        settings.setAllowFileAccess(false);
+        // Insurance for the file picker: some ROM pickers hand back a file:// document, and a
+        // WebView with file access off drops it, reaching the page as an empty selection. Nothing
+        // here loads local files, and an http:// page cannot read file:// anyway, so this only
+        // widens what a picker may return.
+        settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
 
         CookieManager cookies = CookieManager.getInstance();
@@ -798,7 +994,24 @@ public class MainActivity extends Activity {
             }
         });
 
-        web.setWebChromeClient(new WebChromeClient() {            @Override
+        web.setWebChromeClient(new WebChromeClient() {
+            /**
+             * The page's console is the only view into the frontend from here: this app has no
+             * readable log of its own, so browser-side failures are forwarded to the same sink the
+             * status daemon writes.
+             */
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage message) {
+                if (message != null) {
+                    String text = message.message();
+                    if (text != null && text.length() > 300) text = text.substring(0, 300);
+                    Diag.report("console: " + text + " @"
+                            + message.sourceId() + ":" + message.lineNumber());
+                }
+                return false;
+            }
+
+            @Override
             public boolean onShowFileChooser(WebView view,
                                              android.webkit.ValueCallback<Uri[]> callback,
                                              FileChooserParams params) {
@@ -807,16 +1020,13 @@ public class MainActivity extends Activity {
                     pendingFileChooser = null;
                 }
                 pendingFileChooser = callback;
-                try {
-                    Intent chooser = params.createIntent();
-                    chooser.addCategory(Intent.CATEGORY_OPENABLE);
-                    startActivityForResult(
-                            Intent.createChooser(chooser, "选择文件"), FILE_CHOOSER_REQUEST);
-                } catch (Throwable t) {
-                    pendingFileChooser = null;
-                    Toast.makeText(MainActivity.this, "打不开文件选择器", Toast.LENGTH_SHORT).show();
-                    return false;
-                }
+                pickerRetried = false;
+                pickerMode = params == null
+                        ? FileChooserParams.MODE_OPEN : params.getMode();
+                pickerAccept = params == null ? null : params.getAcceptTypes();
+                // Document providers are the modern, better-supported request; the older
+                // get-content action is the fallback the retry path switches to.
+                launchPicker(Intent.ACTION_OPEN_DOCUMENT);
                 return true;
             }
         });
@@ -824,6 +1034,92 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams webParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         root.addView(web, 0, webParams);
+    }
+
+    /**
+     * Launch the document picker for the request currently held in {@link #pendingFileChooser}.
+     *
+     * No chooser wrapper is used. The system already shows its own resolver whenever more than one
+     * picker can answer, and wrapping a picker in {@code Intent.createChooser} adds a hop that this
+     * device's resolver uses to lose the document: the picker was launched, the user picked a file,
+     * and the result arrived as {@code RESULT_OK} with a null Intent, which the page sees as an
+     * empty selection. When {@code action} cannot be launched at all the other document action is
+     * tried before giving up.
+     */
+    private void launchPicker(String action) {
+        Intent target = pickerIntent(action);
+        target.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        pickerAction = action;
+        filePickerLaunched = true;
+        try {
+            startActivityForResult(target, FILE_CHOOSER_REQUEST);
+        } catch (Throwable t) {
+            if (Intent.ACTION_GET_CONTENT.equals(action)) {
+                Diag.report("fc: neither document action could be launched: " + t);
+                abandonPicker("打不开文件选择器");
+                return;
+            }
+            Diag.report("fc: " + action + " unusable (" + t + "); falling back");
+            launchPicker(Intent.ACTION_GET_CONTENT);
+            return;
+        }
+        Diag.report("fc: launched action=" + action + " type=" + target.getType()
+                + " mode=" + pickerMode + " handlers=" + handlerSummary(target));
+    }
+
+    /** Give up on the outstanding request and tell the page the user picked nothing. */
+    private void abandonPicker(String message) {
+        filePickerLaunched = false;
+        if (pendingFileChooser != null) {
+            pendingFileChooser.onReceiveValue(null);
+            pendingFileChooser = null;
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Build the document-picker intent for the request currently held in
+     * {@link #pendingFileChooser}.
+     *
+     * The type is widened to {@code *}{@code /*} and the accept list is passed as extra MIME types
+     * instead: a picker that filters on the type alone shows nothing for an extension- or
+     * multi-type accept list, which looks exactly like an empty folder.
+     *
+     * @param action - {@link Intent#ACTION_OPEN_DOCUMENT} or {@link Intent#ACTION_GET_CONTENT}.
+     * @return the intent to launch.
+     */
+    private Intent pickerIntent(String action) {
+        Intent built = new Intent(action);
+        built.addCategory(Intent.CATEGORY_OPENABLE);
+        built.setType("*/*");
+        if (pickerMode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+            built.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        if (pickerAccept != null && pickerAccept.length > 0) {
+            java.util.ArrayList<String> mimes = new java.util.ArrayList<String>();
+            for (int i = 0; i < pickerAccept.length; i++) {
+                String accept = pickerAccept[i];
+                if (accept != null && accept.indexOf('/') >= 0) mimes.add(accept);
+            }
+            if (!mimes.isEmpty()) built.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
+        }
+        return built;
+    }
+
+    /** @return the visible handlers for a picker intent, for the diagnostic log. */
+    private String handlerSummary(Intent intent) {
+        try {
+            java.util.List<android.content.pm.ResolveInfo> handlers =
+                    getPackageManager().queryIntentActivities(intent, 0);
+            StringBuilder names = new StringBuilder("(").append(handlers.size()).append(")");
+            for (int i = 0; i < handlers.size() && i < 8; i++) {
+                names.append(' ').append(handlers.get(i).activityInfo.packageName)
+                        .append('/').append(handlers.get(i).activityInfo.name);
+            }
+            return names.toString();
+        } catch (Throwable t) {
+            return "?";
+        }
     }
 
     /** @return true when the navigation was handed off outside the WebView. */

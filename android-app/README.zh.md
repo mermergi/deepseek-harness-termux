@@ -257,7 +257,7 @@ xiaoaiisland、课程表超级岛）**清一色是 LSPosed 模块**，靠 hook S
 
 ---
 
-## 踩到的两个坑（都是实测出来的，不是猜的）
+## 踩到的三个坑（都是实测出来的，不是猜的）
 
 ### 1. `$TMPDIR` 会被清空，而服务还在往里面写
 
@@ -283,6 +283,26 @@ java.lang.SecurityException: Permission Denial: package=com.android.shell does n
 ```
 
 新版 Android 把 `am` 锁给了 shell uid。这也是为什么回传通道必须走 HTTP 而不是 intent。
+
+### 3. 小米文件管理器返回选中文件时，结果里没有 URI
+
+WebView 里选文件走的是 `onShowFileChooser` → `startActivityForResult` → `onActivityResult` →
+把 URI 交给网页。这台机器上第三步拿到的是 `RESULT_OK`，但 Intent 的 `getData()` 是 null，
+`ClipData` 里也没有 URI，于是 `FileChooserParams.parseResult` 判定"没选"，网页那边**静默地什么
+都不做**（既不加卡片也不报错）：
+
+```
+fc result: code=-1 data=present action=null type=null uri=null clip=1
+  extras={ android.intent.extra.STREAM=List(1)[content://com.android.fileexplorer.documents/document/primary%3A%2F…] }
+```
+
+文件躺在 extras 里。所以 `recoverUris()` 会退回 `EXTRA_STREAM`，再依次找其它装着 URI 或路径的
+extra，而且**每个候选都先验一次能不能真的读到一个字节**——交给网页一个读不了的 URI，结果还是
+空列表。同类问题在其它小米机型上也有报告（[SO 55453196](https://stackoverflow.com/questions/55453196/)），
+那边是"选 Documents 正常、选 File Manager 就不行"。
+
+这个 App 没有任何可读日志（`logcat` 看不到别的进程），所以它把每次选择器的启动与返回、以及网页的
+`console`，都转发到状态守护进程同一个诊断汇（`~/.dsh-app/status.log`）。
 
 ### 顺带验证的两条
 
