@@ -4,9 +4,9 @@
 // Three unrelated Android limitations are handled here; each is listed with the
 // reason it exists and what it costs. `DSH_PERMISSION_MODE` is not a patch: the
 // shipped profile already reads it, and the launcher sets it.
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -551,9 +551,12 @@ if (resolutionPatched > 0) {
   problems.push(`profile resolution: no profile-boot chunk under ${profileBootDir}`)
 } else if (profileBootFiles.some((name) => readFileSync(join(profileBootDir, name), 'utf8').includes(LINK_DEFAULT))) {
   // already patched
-} else {
-  // Pre-alpha.2 releases default to "link" already; nothing to do.
-  console.log('profile resolution: default already link; nothing to patch')
+} else if (profileBootFiles.length > 0) {
+  // 0.1.7-alpha.1 deleted resolutionMode outright: profile-boot always builds a
+  // runtime generation now, so there is no default left to rewrite. The Android
+  // symptom moved to patch 19, which stops the interception that generation
+  // would install. Say that instead of claiming the default is already fine.
+  console.log('profile resolution: no resolutionMode default in this release (0.1.7+); see patch 19')
 }
 
 // 11. HMR service. 0.1.6-alpha.2 hard-codes @deepseek-ai/dsh-hmr into
@@ -786,7 +789,13 @@ if (existsSync(generalSettingsPath)) {
 //
 // Scoped and quiet on purpose: a profile with no node_modules, or a plugin name
 // already taken in the install tree, is skipped rather than fought over.
-const profilesRoot = join(homedir(), '.dsh', 'profiles')
+//
+// Honour $DSH_HOME like the rest of this file does. Hard-coding ~/.dsh here made
+// the script unsafe to rehearse against a second install: it would reach across
+// and rewrite the real profile's plugin bundles. That is exactly what happened on
+// 2026-09-22 — a rehearsal in ~/dsh-isolation rewrote the live profile's sidebar
+// bundles to 0.1.7 icon names while 0.1.6 was still running.
+const profilesRoot = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
 
 // Sweep first for links of ours that no longer resolve. The loop below walks the
 // profile's node_modules, so it can only ever repair a plugin the profile still
@@ -990,6 +999,14 @@ if (existsSync(gypEntry)) {
 //
 // Best effort on purpose — an unrepaired plugin must never stop the launcher,
 // so nothing here is pushed to `problems`.
+//
+// Layout matters more than it looks. This scan first only looked at `client*.js`
+// in the plugin root and in `lib/`, which silently skipped dshmarket: it ships
+// its browser bundle as `client/client.js`. 0.1.7 renamed the whole icon set
+// (IconX16 -> IconXMedium), so after that upgrade every icon the market read was
+// undefined again and the market page died with React #130 while the log stayed
+// quiet. Every directory a plugin is known to bundle into is scanned now, and
+// the only filter left is file size.
 const primitivesEntry = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-primitives', 'lib', 'index.js')
 if (existsSync(primitivesEntry)) {
   const primitivesSource = readFileSync(primitivesEntry, 'utf8')
@@ -1017,13 +1034,30 @@ if (existsSync(primitivesEntry)) {
         }
       }
       for (const plugin of plugins) {
-        const libDir = join(plugin.dir, 'lib')
-        const bundles = [
-          ...readdirSync(plugin.dir).filter((f) => /^client.*\.js$/.test(f)).map((f) => join(plugin.dir, f)),
-          ...(existsSync(libDir)
-            ? readdirSync(libDir).filter((f) => /^client.*\.js$/.test(f)).map((f) => join(libDir, f))
-            : []),
-        ]
+        // Every directory a plugin is known to bundle into: the root, `lib/`,
+        // `client/` (dshmarket), plus `dist/`, `assets/` and `src/` as cheap
+        // insurance against the next layout.
+        const bundleDirs = ['', 'lib', 'client', 'dist', 'assets', 'src', 'src/client'].map((sub) =>
+          sub === '' ? plugin.dir : join(plugin.dir, sub),
+        )
+        const bundles = []
+        for (const dir of bundleDirs) {
+          if (!existsSync(dir)) continue
+          for (const name of readdirSync(dir)) {
+            if (!name.endsWith('.js')) continue
+            const full = join(dir, name)
+            let size
+            try {
+              size = statSync(full).size
+            } catch {
+              continue
+            }
+            // A minified bundle can be a megabyte; a generated asset should not be
+            // read into memory just to be skipped.
+            if (size > 8 * 1024 * 1024) continue
+            bundles.push(full)
+          }
+        }
         for (const file of bundles) {
           const source = readFileSync(file, 'utf8')
           // How this bundle names the primitives module.
@@ -1052,6 +1086,13 @@ if (existsSync(primitivesEntry)) {
                 if (variants.length > 0) {
                   variants.sort((a, b) => Math.abs(a.size - want) - Math.abs(b.size - want) || a.size - b.size)
                   replacement = { name: variants[0].name, size: want }
+                } else if (shipped.has(`${stem}Medium`)) {
+                  // 0.1.7 moved the size out of the name and into a stroke-weight
+                  // suffix pair: IconSendOutline16 -> IconSendOutlineMedium (or
+                  // ...Regular). Same glyph, and the size still travels in props.
+                  replacement = { name: `${stem}Medium`, size: want }
+                } else if (shipped.has(`${stem}Regular`)) {
+                  replacement = { name: `${stem}Regular`, size: want }
                 }
               }
               if (replacement === null) {
@@ -1079,6 +1120,514 @@ if (existsSync(primitivesEntry)) {
       console.log(`plugin icons: repaired ${repairedRefs} stale reference(s) in ${repairedFiles} bundle(s)`)
     }
   }
+}
+
+// 18. Rebuild the profile-level module farm, and flatten what npm nested.
+//
+// A plugin installed under $DSH_HOME/profiles/<name>/node_modules lists the
+// harness packages it extends (@deepseek-ai/dsh-settings, @deepseek-ai/dsh-agent,
+// ...) as peers. Node resolves those by walking up from the plugin's real path:
+// profiles/<name>/node_modules, profiles/node_modules, $DSH_HOME/node_modules, ...
+// — and the install tree is not on that walk, so the import dies with
+// ERR_MODULE_NOT_FOUND and the loader only reports "failed to import".
+//
+// 0.1.6 filled that gap itself: `link` resolution mode healed a flat symlink farm
+// at $DSH_HOME/profiles/node_modules pointing back into <install>/node_modules.
+// 0.1.7 dropped that mode for runtime interception, which needs the addon Android
+// has no build of (patch 19 skips it), so the farm has to be maintained here.
+// The loader resolves bundle names from the install tree rather than from a
+// profile, so a package npm left nested also has to be exposed there.
+//
+// Only packages, never plugin directories: a plugin is reached through its own
+// profile (plus the install-tree link patch 15 creates), and mirroring plugins
+// into the shared farm would expose one profile's plugins to every other profile.
+// Existing entries are left alone unless they dangle, so a hand-made link or a
+// real directory is never fought over.
+const farmDir = join(profilesRoot, 'node_modules')
+if (existsSync(profilesRoot)) {
+  mkdirSync(farmDir, { recursive: true })
+  const installNames = new Set()
+  const farmedNames = new Set()
+  let farmLinked = 0
+  let farmPruned = 0
+  /** Every package directly under one node_modules directory, scopes expanded. */
+  const packageEntries = (dir) => {
+    const out = []
+    let names
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return out
+    }
+    for (const name of names) {
+      if (name === '.bin' || name.startsWith('.')) continue
+      if (name.startsWith('@')) {
+        let subs
+        try {
+          subs = readdirSync(join(dir, name))
+        } catch {
+          continue
+        }
+        for (const sub of subs) out.push({ scope: name, name: sub, dir: join(dir, name, sub) })
+      } else {
+        out.push({ scope: '', name, dir: join(dir, name) })
+      }
+    }
+    return out
+  }
+  const farmOne = (scope, name, target) => {
+    const relative = scope === '' ? name : join(scope, name)
+    installNames.add(relative)
+    const link = join(farmDir, relative)
+    let stat = null
+    try {
+      stat = lstatSync(link)
+    } catch {
+      stat = null
+    }
+    if (stat !== null) {
+      if (!stat.isSymbolicLink()) return
+      if (existsSync(link)) return
+      try {
+        rmSync(link)
+        farmPruned += 1
+      } catch {
+        return
+      }
+    }
+    if (scope !== '') mkdirSync(join(farmDir, scope), { recursive: true })
+    try {
+      symlinkSync(target, link)
+      farmLinked += 1
+    } catch (error) {
+      problems.push(`profile farm: could not link ${relative}: ${error.message}`)
+    }
+  }
+  for (const scope of readdirSync(farmDir)) {
+    if (scope === '.bin' || scope.startsWith('.')) continue
+    if (scope.startsWith('@')) {
+      let subs
+      try {
+        subs = readdirSync(join(farmDir, scope))
+      } catch {
+        continue
+      }
+      for (const sub of subs) farmedNames.add(join(scope, sub))
+    } else {
+      farmedNames.add(scope)
+    }
+  }
+  // Top level first: where npm hoisted a package, that copy wins.
+  for (const entry of packageEntries(nodeModules)) farmOne(entry.scope, entry.name, entry.dir)
+  // Then flatten what npm left nested inside an install-tree package (a
+  // dependency of one package rather than a hoisted entry): a profile cannot
+  // reach those either. The agent-team client UI package is the one that bites —
+  // it lives under @deepseek-ai/dsh-experimental-agent-team-profile/node_modules.
+  const frontier = [nodeModules]
+  const nestedDirs = []
+  for (let depth = 0; depth < 4 && frontier.length > 0; depth += 1) {
+    const next = []
+    for (const dir of frontier) {
+      for (const entry of packageEntries(dir)) {
+        const inner = join(entry.dir, 'node_modules')
+        if (existsSync(inner)) {
+          next.push(inner)
+          nestedDirs.push(inner)
+        }
+      }
+    }
+    for (const dir of next) {
+      for (const entry of packageEntries(dir)) {
+        const relative = entry.scope === '' ? entry.name : join(entry.scope, entry.name)
+        if (installNames.has(relative)) continue
+        farmOne(entry.scope, entry.name, entry.dir)
+      }
+    }
+    frontier.length = 0
+    frontier.push(...next)
+  }
+  // The loader imports bundle names from the install tree, so a nested package has
+  // to be reachable there too — the farm only serves importers inside a profile.
+  // Same rule as patch 15: a name the install tree already owns is left alone.
+  let flattened = 0
+  const installTop = new Set(
+    packageEntries(nodeModules).map((entry) => (entry.scope === '' ? entry.name : join(entry.scope, entry.name)))
+  )
+  for (const dir of nestedDirs) {
+    for (const entry of packageEntries(dir)) {
+      const relative = entry.scope === '' ? entry.name : join(entry.scope, entry.name)
+      if (installTop.has(relative)) continue
+      const link = join(nodeModules, relative)
+      let stat = null
+      try {
+        stat = lstatSync(link)
+      } catch {
+        stat = null
+      }
+      if (stat !== null) {
+        if (!stat.isSymbolicLink() || existsSync(link)) {
+          installTop.add(relative)
+          continue
+        }
+        try {
+          rmSync(link)
+        } catch {
+          continue
+        }
+      }
+      try {
+        if (entry.scope !== '') mkdirSync(join(nodeModules, entry.scope), { recursive: true })
+        symlinkSync(entry.dir, link)
+        installTop.add(relative)
+        flattened += 1
+      } catch (error) {
+        problems.push(`install flatten: could not link ${relative}: ${error.message}`)
+      }
+    }
+  }
+  // A farm link has exactly two legitimate sources: this install tree, and a
+  // profile directory under $DSH_HOME. A rehearsal in a separate DSH_HOME once
+  // ran this script with a hard-coded profilesRoot and wrote that tree's paths
+  // into this farm. Every one of those links still resolved, so the linking loop
+  // above left them alone and the old prune never saw them: it only visits names
+  // this release still installs, and these links were not dangling. Production
+  // then depends on a directory that exists only to be deleted. Re-point them at
+  // the install tree, and drop the links left dangling by packages this release
+  // removed.
+  //
+  // The test is the link's own target string, not where it resolves to: an
+  // install-tree entry may itself be a link into a profile (patches 15/18 create
+  // those), and following the chain would re-point those links on every run.
+  let farmRepointed = 0
+  const farmRoots = [nodeModules, profilesRoot].map((dir) => resolve(dir))
+  const sweepFarm = (dir) => {
+    let names
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (name === '.bin') continue
+      const link = join(dir, name)
+      let stat
+      try {
+        stat = lstatSync(link)
+      } catch {
+        continue
+      }
+      if (!stat.isSymbolicLink()) {
+        // `@scope` directories hold the other half of the farm.
+        if (stat.isDirectory() && name.startsWith('@')) sweepFarm(link)
+        continue
+      }
+      let target = null
+      try {
+        target = readlinkSync(link)
+      } catch {
+        continue
+      }
+      const absolute = resolve(dir, target)
+      if (farmRoots.some((root) => absolute === root || absolute.startsWith(root + sep))) continue
+      const rel = relative(farmDir, link)
+      const installCopy = join(nodeModules, rel)
+      if (existsSync(installCopy)) {
+        try {
+          rmSync(link)
+          symlinkSync(installCopy, link)
+          farmRepointed += 1
+        } catch (error) {
+          problems.push(`profile farm: could not re-point ${rel}: ${error.message}`)
+        }
+        continue
+      }
+      if (!existsSync(link)) {
+        try {
+          rmSync(link)
+          farmPruned += 1
+        } catch {
+          // Leave it for the next run rather than aborting the launcher.
+        }
+        continue
+      }
+      console.warn(`profile farm: ${rel} points outside $DSH_HOME (${target}); left alone`)
+    }
+  }
+  sweepFarm(farmDir)
+  if (farmLinked > 0 || farmPruned > 0 || farmRepointed > 0) {
+    console.log(
+      `profile farm: linked ${farmLinked}, pruned ${farmPruned} stale link(s), re-pointed ${farmRepointed} link(s) into the install tree under ${farmDir}`,
+    )
+  }
+  if (flattened > 0) console.log(`install flatten: exposed ${flattened} nested package(s) at the install root`)
+}
+
+// 19. Skip the runtime resolution interception on Android.
+//
+// 0.1.7-alpha.1 made profile resolution runtime-only and now installs an
+// interception on Node's ESM and CJS resolvers from PluginPackages' constructor.
+// Installing it calls internalModules(), which does an *unguarded*
+// `require("node-addon-require-builtin")` — darwin/linux/win32 bindings only, and
+// no android-arm64 build has ever been published — so boot dies with
+// `host preparation failed: No usable native binding found for
+//  node-addon-require-builtin-android-arm64`.
+//
+// PluginPackages tolerates a missing interception: packageOf() falls back to
+// packageDirFromParent()'s native lookup when it is undefined. Skipping the
+// interception therefore restores 0.1.6's "link" semantics, and patches 15/18
+// keep plugins and their peers reachable without it. The other caller
+// (collectConfigSchemas, reached only by --dump-config) needs the Node module
+// loader anyway, so it is left alone.
+const ANDROID_RUNTIME_GUARD =
+  '\t\tif (process.platform === "android") return; // ANDROID_PATCH: no node-addon-require-builtin build for android-arm64'
+const appBootEntry = join(nodeModules, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')
+if (existsSync(appBootEntry)) {
+  const source = readFileSync(appBootEntry, 'utf8')
+  const anchor = '\t\tconst interception = installRuntimeInterception(config.resolution);'
+  if (source.includes(ANDROID_RUNTIME_GUARD)) {
+    // already patched
+  } else if (source.includes(anchor)) {
+    writeFileSync(appBootEntry, source.replace(anchor, `${ANDROID_RUNTIME_GUARD}\n${anchor}`))
+    console.log('runtime resolution: interception skipped on android (no require-builtin binding)')
+  } else {
+    console.log('runtime resolution: no PluginPackages interception in this release; nothing to skip')
+  }
+} else {
+  problems.push(`runtime resolution: ${appBootEntry} missing`)
+}
+
+// 20. Plugin metadata without the internal module loader.
+//
+// Patch 19 leaves the runtime interception uninstalled, which is what boot needs,
+// but PluginPackages.readPluginMeta() resolves each plugin's locale files and
+// package.json through ModuleLoader.fromInternal() — the same internal loader —
+// to read titles, descriptions and icons *without evaluating plugin code*. With
+// no interception that loader is undefined, so every package plugin in the list,
+// official built-ins included, reports
+//
+//   Plugin metadata for <name>: Error: Plugin metadata requires the Node module
+//   resolver
+//
+// instead of its display text. The metadata path only needs "resolve this
+// specifier from this parent URL", which import-meta-resolve performs with the
+// same algorithm and conditions. Its lower-level `moduleResolve` is used, not the
+// public `resolve`: for a package with no `exports` field, `resolve` substitutes
+// the subpath without checking that the file exists, so a plugin that ships no
+// locale directory (dsh-whale-widget) reached readdirSync and failed with ENOENT
+// instead of the "no locale file" that the caller handles. `moduleResolve` agrees
+// with the internal resolver on all 882 checked resolutions (every profile plugin
+// and every built-in @deepseek-ai package, × package.json and locale/en.json),
+// error codes included, and the caller matches on those codes to treat a missing
+// locale file as optional. The package is already in the tree and Node 22+ can
+// require it from ESM, so the fallback stays synchronous as the caller requires.
+// If it is ever absent, fall back to the CommonJS resolver: the subpaths at issue
+// (./package.json, ./locale/*.json) carry no import-only conditions.
+const ANDROID_META_RESOLVER_GUARD = 'ANDROID_PATCH_META_RESOLVER'
+const metaResolverAnchor = `function resolvePluginResource(specifier, parentURL) {
+\tconst loader = ModuleLoader.fromInternal();
+\tif (loader === void 0) throw new Error("Plugin metadata requires the Node module resolver");`
+if (existsSync(appBootEntry)) {
+  const source = readFileSync(appBootEntry, 'utf8')
+  if (source.includes(ANDROID_META_RESOLVER_GUARD)) {
+    // already patched
+  } else if (source.includes(metaResolverAnchor)) {
+    const replacement = `function androidPluginResourcePath(specifier, parentURL) { // ${ANDROID_META_RESOLVER_GUARD}
+\tlet moduleResolve;
+\ttry {
+\t\tmoduleResolve = createRequire(import.meta.url)("import-meta-resolve").moduleResolve;
+\t} catch {
+\t\treturn createRequire(parentURL).resolve(specifier);
+\t}
+\tconst resolved = moduleResolve(specifier, parentURL);
+\treturn fileURLToPath(typeof resolved === "string" ? resolved : resolved.href);
+}
+function resolvePluginResource(specifier, parentURL) {
+\tconst loader = ModuleLoader.fromInternal();
+\tif (loader === void 0) return androidPluginResourcePath(specifier, parentURL);`
+    writeFileSync(appBootEntry, source.replace(metaResolverAnchor, replacement))
+    console.log('plugin metadata: resolving resources without the internal loader (android)')
+  } else {
+    console.log('plugin metadata: resolver anchor missing in this release; nothing to patch')
+  }
+}
+
+// 21. Recover writer locks orphaned by a killed process.
+//
+// @deepseek-ai/dsh-atomic-write serializes every writer of a file behind a
+// sibling `<file>.lock` holding the writer's pid, and its own documentation is
+// explicit that a contender never removes an existing lock ("file age cannot
+// prove that its owner stopped; orphan recovery is an operator action"). That is
+// the right rule for a desktop, and the wrong one for a phone that restarts the
+// server by SIGTERM: the market cancels a plugin install, or the launcher kills
+// a boot, and `$DSH_HOME/profiles/web/package.json.lock` survives its owner.
+//
+// Every later plugin install then blocks on it and gives up — the market spins
+// "installing" until the user cancels, and `dsh plugin add` dies with
+// `atomic-write: timed out waiting for the writer lock`. Nothing else clears it,
+// so plugin management stays dead until someone deletes a 6-byte file by hand.
+// This ran at every launch, which is exactly when no install can be in flight:
+// the launcher has already killed the previous server and has not started the
+// next one.
+//
+// Only a lock whose contents are a single pid is touched, and only when that pid
+// is provably gone — a live process keeps its lock, and so does a file whose
+// format this patch does not recognise.
+const recoverLocks = (dir) => {
+  let names
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.endsWith('.lock')) continue
+    const lockPath = join(dir, name)
+    let raw
+    try {
+      raw = readFileSync(lockPath, 'utf8').trim()
+    } catch {
+      continue
+    }
+    if (!/^[1-9][0-9]*$/.test(raw)) continue
+    const pid = Number(raw)
+    let orphaned = false
+    try {
+      const started = statSync(`/proc/${pid}`).mtimeMs
+      // The holder writes the lock during its own life, so a process that began
+      // after the lock was written cannot be the one that took it: the pid was
+      // recycled.
+      orphaned = started > statSync(lockPath).mtimeMs + 5000
+    } catch (error) {
+      // No such process at all — the common case (killed boot or cancelled
+      // install). EACCES instead means the pid exists but is not ours, so the
+      // holder is alive and the lock stays.
+      orphaned = error?.code === 'ENOENT'
+    }
+    if (!orphaned) continue
+    try {
+      rmSync(lockPath)
+      console.log(`writer locks: recovered ${lockPath} (holder pid ${pid} is gone)`)
+    } catch (error) {
+      console.warn(`writer locks: could not remove ${lockPath}: ${error.message}`)
+    }
+  }
+}
+for (const profile of (() => {
+  const out = []
+  try {
+    for (const name of readdirSync(profilesRoot)) {
+      if (!name.startsWith('.')) out.push(join(profilesRoot, name))
+    }
+  } catch {
+    // No profiles yet on a fresh install; nothing to recover.
+  }
+  return out
+})()) {
+  recoverLocks(profile)
+}
+
+// 22. Teach the plugin market's own validator the list-valued patch declaration.
+//
+// dsh 0.1.7 ships `@deepseek-ai/dsh-web-app` with
+// `dsh.bundle.patch: ["./cordis.patch.yml", "./presets/standard.patch.yml", ...]`
+// — five patch files: the app plus the four shipped presets. The boot accepts
+// both shapes (`bundlePatchFiles()`: "must be a file path or a list of file
+// paths"), but dshmarket's `buildBundleLayers()` still reads the field as a
+// string only and reports
+//
+//   bundle declares no dsh.bundle.patch — the profile will fail to boot
+//
+// for the official web-app layer. Its trial validation treats that as fatal, so
+// on 0.1.7 the market rolls back EVERY install and update it attempts — and the
+// rollback rewrites the market's own bundle from npm, which is also what wipes
+// patch 17's icon repair and brings React #130 straight back.
+//
+// This is not fixed by updating the market: 1.55.0 carries the same string-only
+// check. So the validator is taught the shape the boot already accepts. Both
+// sites are patched — the layer build, and the composed-row list that re-parses
+// the layer's patch — because parsing only the first of five files would make
+// the trial replay a different composition than the boot.
+//
+// Anchored and guarded: a market that grows list support itself no longer
+// matches, and the patch then says so instead of corrupting it.
+const marketPatchListGuard = 'ANDROID_PATCH_MARKET_PATCH_LIST'
+const marketDeclaredAnchor = [
+  '        const declared = bundleManifest.dsh?.bundle?.patch;',
+  "        if (typeof declared !== 'string') {",
+  "            layer.error = 'bundle declares no dsh.bundle.patch — the profile will fail to boot';",
+  '            return layer;',
+  '        }',
+  '        const patchPath = join(directory, declared);',
+  '        if (!existsSync(patchPath)) {',
+  '            layer.error = `declared patch ${declared} is missing — the profile will fail to boot`;',
+  '            return layer;',
+  '        }',
+  '        layer.patchPath = patchPath;',
+  '        const patches = parsePatchFile(patchPath);',
+  '        if (patches === null) {',
+  "            layer.parseError = 'patch file is not a valid entry list';",
+  '            return layer;',
+  '        }',
+].join('\n')
+const marketDeclaredReplacement = [
+  `        // ${marketPatchListGuard}: mirror the boot's own bundlePatchFiles(), which`,
+  '        // accepts a path or a list of paths. dsh-web-app declares five patch files.',
+  '        const declaredField = bundleManifest.dsh?.bundle?.patch;',
+  '        const declaredList = typeof declaredField === \'string\'',
+  '            ? [declaredField]',
+  '            : Array.isArray(declaredField)',
+  '                ? declaredField.filter((entry) => typeof entry === \'string\')',
+  '                : [];',
+  '        if (declaredList.length === 0) {',
+  "            layer.error = 'bundle declares no dsh.bundle.patch — the profile will fail to boot';",
+  '            return layer;',
+  '        }',
+  '        const missing = declaredList.find((entry) => !existsSync(join(directory, entry)));',
+  '        if (missing !== undefined) {',
+  "            layer.error = 'declared patch ' + missing + ' is missing — the profile will fail to boot';",
+  '            return layer;',
+  '        }',
+  '        const patchPaths = declaredList.map((entry) => join(directory, entry));',
+  '        layer.patchPath = patchPaths[0];',
+  '        layer.patchPaths = patchPaths;',
+  '        const patches = [];',
+  '        for (const patchPath of patchPaths) {',
+  '            const parsed = parsePatchFile(patchPath);',
+  '            if (parsed === null) {',
+  "                layer.parseError = 'patch file is not a valid entry list';",
+  '                return layer;',
+  '            }',
+  '            patches.push(...parsed);',
+  '        }',
+].join('\n')
+const marketLayersAnchor =
+  '        patches: bundle.patchPath !== null && bundle.parseError === null ? parsePatchFile(bundle.patchPath) ?? [] : [],'
+const marketLayersReplacement =
+  '        patches: bundle.parseError === null && bundle.patchPaths !== undefined ? bundle.patchPaths.flatMap((patchPath) => parsePatchFile(patchPath) ?? []) : [],'
+for (const profile of (() => {
+  const out = []
+  try {
+    for (const name of readdirSync(profilesRoot)) {
+      if (!name.startsWith('.')) out.push(join(profilesRoot, name))
+    }
+  } catch {
+    // No profiles yet on a fresh install; nothing to patch.
+  }
+  return out
+})()) {
+  const marketCheck = join(profile, 'node_modules', 'dshmarket', 'lib', 'check.js')
+  if (!existsSync(marketCheck)) continue
+  const source = readFileSync(marketCheck, 'utf8')
+  if (source.includes(marketPatchListGuard)) continue
+  if (!source.includes(marketDeclaredAnchor) || !source.includes(marketLayersAnchor)) {
+    console.log(`market check: ${marketCheck} does not match this patch's anchors; left alone`)
+    continue
+  }
+  writeFileSync(
+    marketCheck,
+    source.replace(marketDeclaredAnchor, marketDeclaredReplacement).replace(marketLayersAnchor, marketLayersReplacement),
+  )
+  console.log('market check: accepting a list-valued dsh.bundle.patch (matches the boot)')
 }
 
 if (problems.length > 0) {
