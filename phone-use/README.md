@@ -75,12 +75,14 @@ bash phone-use/install.sh
 
 它做四件事，幂等、可重复运行：
 
-1. 把 shipped 的 `standard` preset 复制成 `~/.dsh/.agent-presets/phone-use/`（已存在则保留，不覆盖你的改动）；
-2. 在组成末尾补上 `tool-phone-use` 那一行（已存在则跳过）；
-3. 跑 `build.mjs` 生成 `plugin/index.js`；
-4. 跑 `smoke.mjs` 自检，不过就中止。
+1. 用 `phone-use-preset/generate.mjs` 以 shipped 的 `standard.patch.yml` 为基底，生成 bundle 补丁 `phone-use-preset/cordis.patch.yml`（identity 换成 preset id `phone-use`，末尾挂上 `tool-phone-use` 那一行）；
+2. 跑 `build.mjs` 生成 `phone-use-preset/plugin/index.js`；
+3. 跑 `smoke.mjs` 自检，不过就中止；
+4. `dsh plugin --profile web add phone-use-preset`：pnpm 把它链进 profile，并自动选进 `dsh.profile.bundles`。
 
-装完在 DSH 里**新建会话、preset 选「标准模式 + PhoneUse」**，工具即生效。
+**重启一次**后在 DSH 里新建会话、preset 选「标准模式 + PhoneUse」，工具即生效。
+
+> 为什么不是写 `~/.dsh/.agent-presets/phone-use/`：0.1.7 起那个目录**不再被读取**，preset 改成 bundle 补丁里的 `@deepseek-ai/dsh-agent-preset` 声明。旧目录里的组成还停留在 0.1.6——它缺 0.1.7 给 `standard` 加的 `tool-plugin-manager` 等改动，所以迁移时以**当前版本 shipped 的 standard** 为基，而不是照抄旧副本。
 
 > 基底是 `standard`，不是 `cordis`（创造模式）：`tool-cordis` 把 Host inspect provider 注册到**进程全局**，所以 cordis 家族的第二个 preset 在同一进程里会和 shipped `cordis` 撞车。想要 Cordis 那套自省工具就用创造模式，想要手机控制就用这个 —— 一个进程里选一个。
 
@@ -89,9 +91,9 @@ bash phone-use/install.sh
 `host.js` 是**唯一源头**：它同时也是一份能直接在 Cordis 动态插件里跑的函数体。`build.mjs` 只做一处机械替换（沙箱的 `harness.registerTool(ctx, harness.defineTool(…))` → 真插件的 `ctx.tools.register(defineTool(…))`），匹配数为 0 就拒绝生成 —— 源头形状变了会立刻暴露，而不是生成一个没有工具的插件。
 
 ```sh
-node phone-use/build.mjs --out ~/.dsh/.agent-presets/phone-use/plugin
-node phone-use/smoke.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js     # 离线
-node phone-use/live-test.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js # 真机（需已连 adb）
+node phone-use/build.mjs --out phone-use-preset/plugin
+node phone-use/smoke.mjs phone-use-preset/plugin/index.js     # 离线
+node phone-use/live-test.mjs phone-use-preset/plugin/index.js # 真机（需已连 adb）
 ```
 
 `smoke.mjs` 在离线环境里加载模块、跑一遍 `apply`、断言 8 个工具和 2 个监听器都注册了，**并且把 8 个工具各执行一次**（喂固定的 shell 输出），再用 `bash -n` 校验它将要发出的通知命令。
@@ -100,7 +102,7 @@ node phone-use/live-test.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js # �
 
 `live-test.mjs` 加载**同一份生成模块**，但把 `shell` 接成真的 bash —— 于是可以直接驱动手机跑完整流程（状态 → UI 树 → 按文字点击 → 打字并读回 → 截屏 → 还原浏览器），并逐项断言。
 
-> 生成物放在 preset 自己目录里（行名 `./plugin/index.js` 相对 preset 解析），preset 因此是自包含的、不怕重装 dsh。但生成物里的 `defineTool` 是**构建时探测到的绝对路径** —— 换了 dsh 安装目录要重新构建（`DSH_DIR=... node build.mjs`）。
+> 生成物放在 bundle 自己目录里（行名 `./plugin/index.js` 由 Loader 锚定到声明它的那个补丁文件旁），bundle 因此是自包含的、不怕重装 dsh。但生成物里的 `defineTool` 是**构建时探测到的绝对路径** —— 换了 dsh 安装目录要重新构建（`DSH_DIR=... node build.mjs`）。
 
 ## 安全提示（务必读）
 
@@ -121,8 +123,8 @@ node phone-use/live-test.mjs ~/.dsh/.agent-presets/phone-use/plugin/index.js # �
 两条自动化测试，都可以重跑：
 
 ```sh
-node phone-use/smoke.mjs     <preset>/plugin/index.js   # 离线：加载 + 执行全部工具
-node phone-use/live-test.mjs <preset>/plugin/index.js   # 真机：驱动手机跑完整流程
+node phone-use/smoke.mjs     phone-use-preset/plugin/index.js   # 离线：加载 + 执行全部工具
+node phone-use/live-test.mjs phone-use-preset/plugin/index.js   # 真机：驱动手机跑完整流程
 ```
 
 `live-test.mjs` 最近一次的结果（16/16）：

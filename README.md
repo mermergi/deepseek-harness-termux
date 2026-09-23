@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **17 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **22 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
 
-Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships.
+Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships; patches 18 and 19 come from `0.1.7-alpha.1` — the module farm `link` mode used to build and the runtime resolution interception that cannot load on Android; patch 20 keeps plugin metadata readable now that patch 19 leaves the internal module loader uninstalled; patch 21 recovers the writer locks a killed process leaves behind, which otherwise freeze every plugin install for good; patch 22 teaches the plugin market's own validator the list-valued bundle patch `0.1.7` introduced, without which the market rolls back every install it attempts.
 
 ## Table of contents
 
@@ -184,7 +184,7 @@ An agent preset that gives one session eight `phone_*` tools for driving this ph
 bash phone-use/install.sh
 ```
 
-It copies the shipped `standard` preset into `~/.dsh/.agent-presets/phone-use/`, adds one row, builds the plugin module and self-checks before finishing. Choose **「标准模式 + PhoneUse」** for a session and the tools are there.
+It bundles the shipped `standard` preset with one extra row, builds the plugin module, self-checks, then installs the bundle into the web profile through the same pnpm channel the plugin market uses. Restart once, then choose **「标准模式 + PhoneUse」** for a session and the tools are there. (A preset is no longer a `~/.dsh/.agent-presets/` directory — `0.1.7` stopped reading that.)
 
 The same preset mirrors run status into a single Android notification — `运行中 · phone_tap` while it works, `已结束 · 等你指令` when a turn ends, plus a button back to this GUI — so the end of a run is visible without watching the browser.
 
@@ -213,7 +213,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 ## Patch list
 
-17 in total; the numbers match the comments in `android-fix.mjs`.
+22 in total; the numbers match the comments in `android-fix.mjs`.
 
 **Android platform gaps** (1–8):
 
@@ -241,7 +241,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
 | 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
 
-**UI, plugins and toolchain** (12–17):
+**UI, plugins and toolchain** (12–22):
 
 | # | Symptom | Fix |
 |---|---|---|
@@ -250,7 +250,12 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 14 | Restarting means reaching for a terminal | a "Restart DSH service" button at the bottom of the General settings page (native ↔ web bridge, with confirmation) |
 | 15 | Boot fails after installing a plugin: `Cannot find package '<plugin>'` | link plugins installed into a profile into the install directory; also sweep dangling links |
 | 16 | A plugin will not install: `node-pty install … exited with exit status: 127` | repair the global `node-gyp`: point its shebang at the Termux `env`, and turn the PATH entry from a copy back into a symlink |
-| 17 | Opening a side chat crashes: `Minified React error #130` | the plugin calls an icon this dsh no longer exports (`IconSendOutline16`); rewrite it to the same glyph at the shipped size |
+| 17 | Opening a side chat crashes: `Minified React error #130` | the plugin calls an icon this dsh no longer exports (`IconSendOutline16`); rewrite it to the same glyph at the shipped size. The scan covers every directory a plugin bundles into — `0.1.7` renamed the whole set (`IconX16` → `IconXMedium`) and the market ships its bundle as `client/client.js` |
+| 18 | Plugins load from a directory outside `$DSH_HOME` | rebuild `$DSH_HOME/profiles/node_modules` against the install tree: re-point links that resolve elsewhere, prune what this release no longer installs |
+| 19 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` (0.1.7) | skip the runtime resolution interception `PluginPackages` installs from its constructor; nothing on the boot path needs it and `link` semantics come back |
+| 20 | The plugin list shows `Plugin metadata for <plugin>: Error: Plugin metadata requires the Node module resolver` for every plugin, official built-ins included | patch 19 removed the internal loader that `readPluginMeta` resolves locale files and `package.json` through, so it falls back to `import-meta-resolve`'s `moduleResolve` (equal to the internal resolver on all 882 checked resolutions; public `resolve` is not — it skips the file-existence check) |
+| 21 | A plugin install or market update hangs on "installing" forever, then fails with `atomic-write: timed out waiting for the writer lock` | a restart (or a cancelled install) kills the writer that holds `<file>.lock`, and nothing ever clears it — that is deliberate upstream ("orphan recovery is an operator action"). At every launch, remove only locks whose pid is provably gone; a live holder and an unrecognised file are left alone |
+| 22 | Every market install or update rolls back: `trial validation failed — bundle declares no dsh.bundle.patch` — and the rollback rewrites the market from npm, which wipes patch 17 and brings React #130 back | `0.1.7`'s `@deepseek-ai/dsh-web-app` declares `dsh.bundle.patch` as a **list of five files** (the app plus the four presets). The boot accepts a path or a list (`bundlePatchFiles()`), but the market's `buildBundleLayers()` still reads the field as a string and fails the official layer. Teach it both shapes — in the layer build and in the composed-row list — so the trial replays the same composition as the boot. `1.55.0` carries the same string-only check, so updating the market does not fix it |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 

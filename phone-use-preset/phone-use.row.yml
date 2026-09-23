@@ -1,0 +1,46 @@
+# The one row this preset adds to the shipped `standard` composition.
+# Kept as its own file so `generate.mjs` can rebuild the bundle patch from the
+# current shipped standard without this text living in two places.
+# ── PhoneUse ────────────────────────────────────────────────────────────────
+
+# Eyes and hands on this Android phone, through the Termux `adb` client already
+# paired to 127.0.0.1. Eight model-facing tools: `phone_status` (reachability,
+# model, screen, foreground app), `phone_screenshot` (the screen as an image the
+# model can actually look at), `phone_ui` (the accessibility tree as numbered
+# elements with REAL device-pixel tap coordinates), and the actions
+# `phone_tap`, `phone_swipe`, `phone_key`, `phone_text`, `phone_app`.
+#
+# The row registers into the host `tools` registry and publishes no service, so
+# it sits loose here like `tool-bash` rather than inside an isolate realm. It
+# CONSUMES the host `shell`, `fs`, and `attachments` services at call time; a
+# realm of its own would hide exactly those and its tools would stop reaching
+# them.
+#
+# The plugin module ships inside this bundle, but the row must name it as a
+# PACKAGE SPECIFIER, not as `./plugin/index.js`. A relative name is only anchored
+# to the patch file for top-level `insert` rows and for `group` rows:
+# `anchorInsertedPluginNames()` recurses into `entry.group && Array.isArray(config)`
+# and nothing else, so a name inside a preset declaration's `config.plugins` stays
+# relative and `Loader.import()` resolves it with `new URL(name, baseUrl)` —
+# against the PROFILE directory, where `plugin/index.js` does not exist. The row
+# then fails to import, the preset reports as broken, and the pickers drop it
+# entirely (they only offer presets whose audit is clean).
+#
+# The bare specifier resolves because patch 15 links every profile-installed
+# package into the install tree, and `Loader.import()` imports bare names from its
+# own location. Keep it in sync with `package.json`'s `name`. That module is
+# GENERATED from a verified source body — rebuild it with
+# `node phone-use/build.mjs --out phone-use-preset/plugin` in the workspace that
+# owns `phone-use/host.js`, and never hand-edit the generated file.
+#
+# This preset is a copy of `standard`, not of `cordis`: `tool-cordis` registers
+# process-global Host inspect providers, so a second cordis-family preset
+# standing in the same process collides with the shipped `cordis` mount. To get
+# both the Cordis toolset and PhoneUse, pick one base per process.
+#
+# Prerequisite: the Termux adb client connected to this device (`adb pair` once,
+# then `adb connect 127.0.0.1:<wireless-debugging-port>`). When that link is
+# down, `phone_status` reports connected=false and every other tool fails with
+# the reconnect recipe instead of guessing.
+- id: tool-phone-use
+  name: '@local/dsh-phone-use-preset/plugin/index.js'

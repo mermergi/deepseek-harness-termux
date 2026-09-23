@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-phone-use-preset",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PhoneUse agent preset: the standard agent composition plus eight adb-backed phone_* tools.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

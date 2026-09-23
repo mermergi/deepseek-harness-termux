@@ -4,9 +4,9 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **17 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **22 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
 
-其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标。
+其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标；第 18、19 条是 `0.1.7-alpha.1` 带来的——它不再自己建 `link` 模式的模块农场，也把运行时解析拦截装进了启动必经路径，而那个拦截在安卓上加载不了；第 20 条让第 19 条留下的「内部模块加载器不可用」不再拖垮插件元信息；第 21 条回收被杀进程遗留的写锁——否则它会把之后**每一次**插件安装都冻住；第 22 条教插件市场自己的校验器认识 `0.1.7` 引入的**列表式** bundle patch，否则市场会把每一次安装都回滚掉。
 
 ## 目录
 
@@ -181,7 +181,7 @@ termux-open android-app/prebuilt/dsh.apk       # 装现成的 APK，不需要构
 bash phone-use/install.sh
 ```
 
-它把 shipped 的 `standard` preset 复制到 `~/.dsh/.agent-presets/phone-use/`，补上那一行组成，构建插件模块，最后自检。新建会话时选 **「标准模式 + PhoneUse」**，工具即生效。
+它把 shipped 的 `standard` preset 与额外的 PhoneUse 行打成 bundle，构建插件模块、自检，然后用插件市场内部同一条 pnpm 通道装进 web profile。**重启一次**后新建会话选 **「标准模式 + PhoneUse」**，工具即生效。（preset 不再是 `~/.dsh/.agent-presets/` 目录——`0.1.7` 起已不再读取。）
 
 同一个 preset 还会把运行状态镜像到一条安卓通知上 —— 干活时是 `运行中 · phone_tap`，一轮结束变成 `已结束 · 等你指令`，并带一个跳回本 GUI 的按钮。这样"跑完没有"不用盯着浏览器。
 
@@ -210,7 +210,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-共 17 条，编号与 `android-fix.mjs` 里的注释一致。
+共 22 条，编号与 `android-fix.mjs` 里的注释一致。
 
 **Android 平台差异**（1–8）：
 
@@ -238,7 +238,7 @@ this host; refusing to run the command unconfined.
 | 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
 | 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
 
-**界面、插件与工具链**（12–17）：
+**界面、插件与工具链**（12–22）：
 
 | # | 现象 | 处理 |
 |---|---|---|
@@ -247,7 +247,12 @@ this host; refusing to run the command unconfined.
 | 14 | 想重启得靠命令行 | 通用设置页底部加「重启 DSH 服务」按钮（原生 ↔ Web 桥接，带二次确认） |
 | 15 | 装了插件后启动崩：`Cannot find package '<plugin>'` | 把 profile 里装的插件链进安装目录；顺带清理悬空链接 |
 | 16 | 插件装不上：`node-pty install … exited with exit status: 127` | 修全局 `node-gyp`：shebang 指向 Termux 的 `env`，并把 PATH 入口从"副本"改回符号链接 |
-| 17 | 打开侧边对话崩：`Minified React error #130` | 插件引用了此版 dsh 已不提供的图标（`IconSendOutline16`）；改用它实际提供的同名尺寸变体 |
+| 17 | 打开侧边对话崩：`Minified React error #130` | 插件引用了此版 dsh 已不提供的图标（`IconSendOutline16`）；改用它实际提供的同名尺寸变体。扫描要覆盖插件真正打包的每个目录——`0.1.7` 把整套图标改了名（`IconX16` → `IconXMedium`），而插件市场的 bundle 放在 `client/client.js` |
+| 18 | 插件从 `$DSH_HOME` 之外的目录加载 | 按安装树重建 `$DSH_HOME/profiles/node_modules`：把指向别处的软链重指回来，删掉这版已不再安装的条目 |
+| 19 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64`（0.1.7） | 跳过 `PluginPackages` 构造函数里装的运行时解析拦截；启动路径上没人需要它，`link` 语义随之恢复 |
+| 20 | 插件列表里**每个**插件（含官方内置）都显示 `Plugin metadata for <插件>: Error: Plugin metadata requires the Node module resolver` | 第 19 条抽掉了内部模块加载器，而 `readPluginMeta` 正是靠它解析各插件的 locale 与 `package.json`；改为降级到 `import-meta-resolve` 的 `moduleResolve`（882 次实测与内部解析器完全一致；公开的 `resolve` 不行——它不做文件存在性校验） |
+| 21 | 插件装不上/市场更新一直转「安装中」并最终报 `atomic-write: timed out waiting for the writer lock` | 重启（或被取消的安装）会把持有 `<文件>.lock` 的写进程杀掉，而没人清理它——上游是刻意的（「孤儿锁只能人工恢复」）。改为每次启动时只回收**pid 确实已消失**的锁；活着的持有者和无法识别的文件一概不碰 |
+| 22 | 市场每次安装/更新都回滚：`trial validation failed — bundle declares no dsh.bundle.patch`；而回滚会把市场从 npm 重写一遍，于是第 17 条打的图标补丁被覆盖、React #130 又回来了 | `0.1.7` 的 `@deepseek-ai/dsh-web-app` 把 `dsh.bundle.patch` 声明成**五个文件的列表**（App + 四个 shipped preset）。boot 明确接受「路径或路径列表」（`bundlePatchFiles()`），但市场自己的 `buildBundleLayers()` 仍按字符串读，于是官方层被判「起不来」。把它改成两种形状都认——层构建和组装行列表两处都改——试启动校验才会和 boot 回放同一份组合。`1.55.0` 里这段代码一模一样，所以升级市场本身并不能解决 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 

@@ -13,11 +13,12 @@
 import { execSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const BASH = '/data/data/com.termux/files/usr/bin/bash'
-const target = resolve(process.argv[2] ?? '/data/data/com.termux/files/home/.dsh/.agent-presets/phone-use/plugin/index.js')
+const here = dirname(fileURLToPath(import.meta.url))
+const target = resolve(process.argv[2] ?? join(here, '..', 'phone-use-preset', 'plugin', 'index.js'))
 
 const results = []
 function check(label, ok, detail) {

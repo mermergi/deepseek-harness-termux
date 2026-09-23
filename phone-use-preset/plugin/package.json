@@ -1,0 +1,8 @@
+{
+  "name": "dsh-plugin-phone-use",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "PhoneUse: adb-backed Android screen, UI-tree, and touch tools for one DSH session."
+}
