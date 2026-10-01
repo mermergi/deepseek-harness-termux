@@ -1328,8 +1328,22 @@ if (existsSync(profilesRoot)) {
         continue
       }
       const absolute = resolve(dir, target)
-      if (farmRoots.some((root) => absolute === root || absolute.startsWith(root + sep))) continue
       const rel = relative(farmDir, link)
+      // A link that no longer resolves is dead wherever it points: an upgrade
+      // removes and replaces packages, so a farm link into the install tree then
+      // dangles while its target string still reads as "inside the tree". Prune
+      // it before the roots test, or nothing ever collects it — the linking loop
+      // only visits names this release still installs.
+      if (!existsSync(link)) {
+        try {
+          rmSync(link)
+          farmPruned += 1
+        } catch {
+          // Leave it for the next run rather than aborting the launcher.
+        }
+        continue
+      }
+      if (farmRoots.some((root) => absolute === root || absolute.startsWith(root + sep))) continue
       const installCopy = join(nodeModules, rel)
       if (existsSync(installCopy)) {
         try {
@@ -1338,15 +1352,6 @@ if (existsSync(profilesRoot)) {
           farmRepointed += 1
         } catch (error) {
           problems.push(`profile farm: could not re-point ${rel}: ${error.message}`)
-        }
-        continue
-      }
-      if (!existsSync(link)) {
-        try {
-          rmSync(link)
-          farmPruned += 1
-        } catch {
-          // Leave it for the next run rather than aborting the launcher.
         }
         continue
       }
