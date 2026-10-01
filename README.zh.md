@@ -4,9 +4,9 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **22 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **23 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
 
-其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标；第 18、19 条是 `0.1.7-alpha.1` 带来的——它不再自己建 `link` 模式的模块农场，也把运行时解析拦截装进了启动必经路径，而那个拦截在安卓上加载不了；第 20 条让第 19 条留下的「内部模块加载器不可用」不再拖垮插件元信息；第 21 条回收被杀进程遗留的写锁——否则它会把之后**每一次**插件安装都冻住；第 22 条教插件市场自己的校验器认识 `0.1.7` 引入的**列表式** bundle patch，否则市场会把每一次安装都回滚掉。
+其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标；第 18、19 条是 `0.1.7-alpha.1` 带来的——它不再自己建 `link` 模式的模块农场，也把运行时解析拦截装进了启动必经路径，而那个拦截在安卓上加载不了；第 20 条让第 19 条留下的「内部模块加载器不可用」不再拖垮插件元信息；第 21 条回收被杀进程遗留的写锁——否则它会把之后**每一次**插件安装都冻住；第 22 条教插件市场自己的校验器认识 `0.1.7` 引入的**列表式** bundle patch，否则市场会把每一次安装都回滚掉；第 23 条把 Node 在 Termux 上报的 `android` 平台映射到 Linux 进程检查器，不补则右侧边栏的终端根本打不开。
 
 ## 目录
 
@@ -210,7 +210,7 @@ this host; refusing to run the command unconfined.
 
 ## 补丁清单
 
-共 22 条，编号与 `android-fix.mjs` 里的注释一致。
+共 23 条，编号与 `android-fix.mjs` 里的注释一致。
 
 **Android 平台差异**（1–8）：
 
@@ -238,7 +238,7 @@ this host; refusing to run the command unconfined.
 | 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
 | 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
 
-**界面、插件与工具链**（12–22）：
+**界面、插件与工具链**（12–23）：
 
 | # | 现象 | 处理 |
 |---|---|---|
@@ -253,6 +253,7 @@ this host; refusing to run the command unconfined.
 | 20 | 插件列表里**每个**插件（含官方内置）都显示 `Plugin metadata for <插件>: Error: Plugin metadata requires the Node module resolver` | 第 19 条抽掉了内部模块加载器，而 `readPluginMeta` 正是靠它解析各插件的 locale 与 `package.json`；改为降级到 `import-meta-resolve` 的 `moduleResolve`（882 次实测与内部解析器完全一致；公开的 `resolve` 不行——它不做文件存在性校验） |
 | 21 | 插件装不上/市场更新一直转「安装中」并最终报 `atomic-write: timed out waiting for the writer lock` | 重启（或被取消的安装）会把持有 `<文件>.lock` 的写进程杀掉，而没人清理它——上游是刻意的（「孤儿锁只能人工恢复」）。改为每次启动时只回收**pid 确实已消失**的锁；活着的持有者和无法识别的文件一概不碰 |
 | 22 | 市场每次安装/更新都回滚：`trial validation failed — bundle declares no dsh.bundle.patch`；而回滚会把市场从 npm 重写一遍，于是第 17 条打的图标补丁被覆盖、React #130 又回来了 | `0.1.7` 的 `@deepseek-ai/dsh-web-app` 把 `dsh.bundle.patch` 声明成**五个文件的列表**（App + 四个 shipped preset）。boot 明确接受「路径或路径列表」（`bundlePatchFiles()`），但市场自己的 `buildBundleLayers()` 仍按字符串读，于是官方层被判「起不来」。把它改成两种形状都认——层构建和组装行列表两处都改——试启动校验才会和 boot 回放同一份组合。`1.55.0` 里这段代码一模一样，所以升级市场本身并不能解决 |
+| 23 | 右侧边栏新建终端打不开：`subprocess-local: terminal inspection is unsupported on platform android` | Termux 上 Node 报的平台名是 `android` 而不是 `linux`，而进程检查器的工厂只认 linux/darwin/win32——它在分配 pty **之前**就抛了。Android 对它随后要用的东西就是 Linux：`/proc` 布局标准、对自家子进程可读（`stat`、`fd/0`、`task/<tid>/syscall` 均已实测），bionic 用的也是检查器里那套 arm64 系统调用号，node-pty 在本机也能正常开 pty。把 `android` 映射到 Linux 检查器（连同复用同一张进程表的「已退出 shell」判定）。进程**围栏**刻意保留在 fallback 路径：linux-scope 探测需要 user systemd 或私有 bootstrap，那条路只会告警 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 

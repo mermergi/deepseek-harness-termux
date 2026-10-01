@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **22 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **23 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
 
-Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships; patches 18 and 19 come from `0.1.7-alpha.1` — the module farm `link` mode used to build and the runtime resolution interception that cannot load on Android; patch 20 keeps plugin metadata readable now that patch 19 leaves the internal module loader uninstalled; patch 21 recovers the writer locks a killed process leaves behind, which otherwise freeze every plugin install for good; patch 22 teaches the plugin market's own validator the list-valued bundle patch `0.1.7` introduced, without which the market rolls back every install it attempts.
+Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships; patches 18 and 19 come from `0.1.7-alpha.1` — the module farm `link` mode used to build and the runtime resolution interception that cannot load on Android; patch 20 keeps plugin metadata readable now that patch 19 leaves the internal module loader uninstalled; patch 21 recovers the writer locks a killed process leaves behind, which otherwise freeze every plugin install for good; patch 22 teaches the plugin market's own validator the list-valued bundle patch `0.1.7` introduced, without which the market rolls back every install it attempts; patch 23 maps Node's `android` platform onto the Linux process inspector, without which the right-sidebar terminal refuses to open at all.
 
 ## Table of contents
 
@@ -213,7 +213,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 ## Patch list
 
-22 in total; the numbers match the comments in `android-fix.mjs`.
+23 in total; the numbers match the comments in `android-fix.mjs`.
 
 **Android platform gaps** (1–8):
 
@@ -241,7 +241,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
 | 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
 
-**UI, plugins and toolchain** (12–22):
+**UI, plugins and toolchain** (12–23):
 
 | # | Symptom | Fix |
 |---|---|---|
@@ -256,6 +256,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 20 | The plugin list shows `Plugin metadata for <plugin>: Error: Plugin metadata requires the Node module resolver` for every plugin, official built-ins included | patch 19 removed the internal loader that `readPluginMeta` resolves locale files and `package.json` through, so it falls back to `import-meta-resolve`'s `moduleResolve` (equal to the internal resolver on all 882 checked resolutions; public `resolve` is not — it skips the file-existence check) |
 | 21 | A plugin install or market update hangs on "installing" forever, then fails with `atomic-write: timed out waiting for the writer lock` | a restart (or a cancelled install) kills the writer that holds `<file>.lock`, and nothing ever clears it — that is deliberate upstream ("orphan recovery is an operator action"). At every launch, remove only locks whose pid is provably gone; a live holder and an unrecognised file are left alone |
 | 22 | Every market install or update rolls back: `trial validation failed — bundle declares no dsh.bundle.patch` — and the rollback rewrites the market from npm, which wipes patch 17 and brings React #130 back | `0.1.7`'s `@deepseek-ai/dsh-web-app` declares `dsh.bundle.patch` as a **list of five files** (the app plus the four presets). The boot accepts a path or a list (`bundlePatchFiles()`), but the market's `buildBundleLayers()` still reads the field as a string and fails the official layer. Teach it both shapes — in the layer build and in the composed-row list — so the trial replays the same composition as the boot. `1.55.0` carries the same string-only check, so updating the market does not fix it |
+| 23 | New terminal in the right sidebar never opens: `subprocess-local: terminal inspection is unsupported on platform android` | Node reports `android`, never `linux`, on Termux, and the inspector factory knows linux/darwin/win32 only — it throws before the pty is allocated. Android *is* Linux for everything it then touches: `/proc` keeps the standard layout and is readable for our own children (`stat`, `fd/0`, `task/<tid>/syscall` all verified on device), bionic uses the same arm64 syscall numbers the inspector carries, and node-pty spawns a working pty here. Map `android` onto the Linux inspector (and onto the exited-shell classification that reads the same table). Process *containment* deliberately stays on the fallback path: the linux-scope probe needs user systemd or a private bootstrap, and that path only warns |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 

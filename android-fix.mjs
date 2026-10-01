@@ -1635,6 +1635,65 @@ for (const profile of (() => {
   console.log('market check: accepting a list-valued dsh.bundle.patch (matches the boot)')
 }
 
+// 23. Terminal inspection. The right-sidebar terminal asks subprocess-local for a
+// platform process inspector *before* it allocates its pty, and that factory knows
+// linux/darwin/win32 only — Node reports "android" on Termux, so the feature dies
+// with `subprocess-local: terminal inspection is unsupported on platform android`
+// and no terminal ever opens. Android is Linux for everything the inspector
+// touches: /proc keeps the standard layout and is readable for our own children
+// (`stat`, `fd/0`, `task/<tid>/syscall` all verified on device), bionic uses the
+// same arm64 syscall numbers the inspector already carries, and node-pty spawns a
+// working pty here. Process *containment* deliberately stays on the fallback path:
+// the linux-scope probe needs user systemd or a private bootstrap, neither exists
+// under Termux, and that path only warns.
+const terminalInspectorMarker = 'ANDROID_PATCH: android is linux'
+const subprocessLocal = join(nodeModules, '@deepseek-ai', 'dsh-subprocess-local', 'lib')
+if (existsSync(subprocessLocal)) {
+  // The runtime bundle carries a content hash, so find it by shape rather than name.
+  for (const entry of readdirSync(subprocessLocal)) {
+    if (!entry.startsWith('runner-launch-') || !entry.endsWith('.js')) continue
+    const file = join(subprocessLocal, entry)
+    const source = readFileSync(file, 'utf8')
+    if (source.includes(terminalInspectorMarker)) continue
+    const anchor = 'if (platform === "linux") return new LinuxProcessInspector(arch, internals);'
+    if (!source.includes(anchor)) {
+      problems.push(`terminal inspector: anchor missing in ${file}`)
+      continue
+    }
+    writeFileSync(
+      file,
+      source.replace(
+        anchor,
+        `if (platform === "linux" || platform === "android") return new LinuxProcessInspector(arch, internals); // ${terminalInspectorMarker}: bionic + /proc`,
+      ),
+    )
+    console.log('terminal inspector: android now resolves to the Linux process inspector')
+  }
+
+  const runtime = join(subprocessLocal, 'index.js')
+  if (existsSync(runtime)) {
+    const source = readFileSync(runtime, 'utf8')
+    if (!source.includes(terminalInspectorMarker)) {
+      // Same reason: an exited shell is classified through the Linux process table.
+      const anchor = 'this.platform === "linux" && observed.complete === true'
+      if (source.includes(anchor)) {
+        writeFileSync(
+          runtime,
+          source.replace(
+            anchor,
+            `(this.platform === "linux" || this.platform === "android") /* ${terminalInspectorMarker} */ && observed.complete === true`,
+          ),
+        )
+        console.log('terminal activity: android classifies an exited shell through the Linux process table')
+      } else {
+        problems.push(`terminal activity: anchor missing in ${runtime}`)
+      }
+    }
+  }
+} else {
+  problems.push(`terminal inspector: ${subprocessLocal} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
