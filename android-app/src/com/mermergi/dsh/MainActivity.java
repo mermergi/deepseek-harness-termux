@@ -67,6 +67,22 @@ public class MainActivity extends Activity {
 
     private static final int FILE_CHOOSER_REQUEST = 4711;
 
+    /**
+     * How long a boot may spin before the splash offers its retry buttons. A cold start loads
+     * every plugin before the server prints its token, which is far longer than a warm one, and
+     * a silent spinner is what makes that wait look like a hang.
+     */
+    private static final long SPLASH_PATIENCE_MS = 20000L;
+
+    /** Must stay ahead of {@code ensure-server.mjs}'s own 110s wait, or the app gives up first. */
+    private static final long HANDOFF_WAIT_MS = 120000L;
+
+    /** Least time between two Termux nudges while the server stops answering. */
+    private static final long NUDGE_MIN_INTERVAL_MS = 20000L;
+
+    /** An outage at least this long is treated as a server replacement, worth a page reload. */
+    private static final long LONG_OUTAGE_MS = 45000L;
+
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
 
@@ -95,6 +111,23 @@ public class MainActivity extends Activity {
     private volatile int bootGeneration;
     private boolean authRetried;
 
+    /**
+     * Foreground server watch. A restarted server is a new process with a new launch token; the
+     * page on screen reconnects its streams but keeps the turn state it had already derived, so
+     * a Session can stay looking busy after the turn died with the server — Send then queues
+     * instead of starting a turn and Stop has nothing left to cancel. Watching for the server to
+     * come back and reloading the page is what clears that state without the user restarting.
+     */
+    private volatile boolean serverWentAway;
+    private volatile boolean foregroundWatchRunning;
+    private volatile long lastAutoReloadAt;
+    /** Least time between two Termux nudges: a freeze is lifted by one intent, not by a storm. */
+    private volatile long lastNudgeAt;
+    /** When the server was first seen not answering; 0 while it is answering. */
+    private volatile long awaySince;
+    /** Set once a boot has a URL and is loading the page, so the patience notice stands down. */
+    private volatile boolean loadingPage;
+
     private StatusBubble bubble;
     private StatusPoller statusPoller;
     private long idleSince;
@@ -113,6 +146,9 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         buildUi();
         IslandNotifier.ensureChannel(this);
+        // Hold the app in the foreground so the Termux-side server can be resurrected when
+        // Android force-stops Termux (clearing its recent-tasks entry) between two sessions.
+        KeepAliveService.start(this);
         probeIslandSupport();
         handleIntent(getIntent());
     }
@@ -176,12 +212,27 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        Uri data = intent == null ? null : intent.getData();
+        boolean handoff = data != null
+                && "dshapp".equals(data.getScheme()) && "open".equals(data.getHost());
+        // A plain relaunch — the launcher icon, or the floating bubble's "return to app" — must
+        // not throw away a page that is already on screen. A fresh load aborts whatever RPC is
+        // in flight, which is how a click on Send can simply vanish. Only an explicit hand-off
+        // from Termux supersedes the live page.
+        if (!handoff && web != null && !isSplashVisible()) {
+            Diag.report("intent: page already on screen, keeping it");
+            return;
+        }
         handleIntent(intent);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        stopForegroundWatch();
+        // From here on the keep-alive service owns the recovery: it is still in the foreground
+        // as far as Android is concerned, and it can dispatch the bridge when the server dies.
+        KeepAliveService.setAppForeground(false);
         if (web != null) {
             web.onPause();
             CookieManager.getInstance().flush();
@@ -203,12 +254,17 @@ public class MainActivity extends Activity {
         // The user is looking at the app: a good moment to make sure the status endpoint
         // exists, since starting a service in another app is unrestricted from the foreground.
         StatusPoller.ensureDaemon(this);
+        startForegroundWatch();
+        // The app boots itself while it is on screen; the service stands down to avoid a second
+        // bridge dispatch racing the handoff endpoint's single poller.
+        KeepAliveService.setAppForeground(true);
         maybeOfferBubble();
     }
 
     @Override
     protected void onDestroy() {
         stopBackgroundStatus();
+        stopForegroundWatch();
         io.shutdownNow();
         if (web != null) web.destroy();
         super.onDestroy();
@@ -626,18 +682,37 @@ public class MainActivity extends Activity {
      */
     private void beginBoot(final boolean restartServer) {
         final int generation = ++bootGeneration;
+        final long startedAt = System.currentTimeMillis();
+        loadingPage = false;
         showStatus("正在连接 DSH…", "检查本机 3080 端口", true);
+        // The app has no readable log of its own, so every branch this takes is shipped to the
+        // Termux diagnostic sink: without it "卡住" is indistinguishable from "slow".
+        Diag.report("boot: start restart=" + restartServer + " cookie=" + cookiePresent());
+        ui.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (generation != bootGeneration || !isSplashVisible() || loadingPage) return;
+                showStatus("后台服务还在启动…",
+                        "首次启动要加载全部插件，可能要几十秒；也可以点重试", false);
+            }
+        }, SPLASH_PATIENCE_MS);
         bridgeDispatchFailed = false;
         io.execute(new Runnable() {
             @Override
             public void run() {
                 if (!restartServer && cookieSessionStillGood()) {
+                    Diag.report("boot: cookie accepted after "
+                            + (System.currentTimeMillis() - startedAt) + "ms");
                     loadInWeb(BASE_URL + "/", generation);
                     return;
                 }
                 boolean dispatched = dispatchTermuxBridge(restartServer);
-                String handoff = pollHandoff(dispatched ? 60000L : 5000L, generation);
+                String handoff = pollHandoff(dispatched ? HANDOFF_WAIT_MS : 5000L, generation);
                 if (generation != bootGeneration) return;
+                Diag.report("boot: bridge dispatched=" + dispatched
+                        + " handoff=" + (handoff == null
+                                ? "TIMEOUT" : "NO_TOKEN".equals(handoff) ? "NO_TOKEN" : "url")
+                        + " after " + (System.currentTimeMillis() - startedAt) + "ms");
                 if (handoff == null) {
                     showBootFailure(generation);
                     return;
@@ -648,6 +723,113 @@ public class MainActivity extends Activity {
                     return;
                 }
                 loadInWeb(handoff, generation);
+            }
+        });
+    }
+
+    /** @return whether the WebView holds any cookie for the app origin; diagnostics only. */
+    private boolean cookiePresent() {
+        try {
+            String cookie = CookieManager.getInstance().getCookie(BASE_URL);
+            return cookie != null && !cookie.isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- foreground server watch
+
+    /** Begin watching the loopback server while a page is on screen. Idempotent. */
+    private void startForegroundWatch() {
+        if (foregroundWatchRunning) return;
+        foregroundWatchRunning = true;
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int misses = 0;
+                while (foregroundWatchRunning) {
+                    if (serverAnswers()) {
+                        if (serverWentAway) {
+                            serverWentAway = false;
+                            long outage = awaySince == 0 ? 0L : System.currentTimeMillis() - awaySince;
+                            awaySince = 0L;
+                            Diag.report("watch: server is back after " + (outage / 1000) + "s");
+                            // Reload only after an outage long enough to have certainly broken
+                            // the page's streams. Short flaps are normal here — the freezer
+                            // thaws on any Termux intent — and reloading through them threw
+                            // away whatever the user was doing, every couple of minutes.
+                            if (outage >= LONG_OUTAGE_MS) reloadAfterRestart();
+                        }
+                        misses = 0;
+                    } else {
+                        misses += 1;
+                        // Two consecutive misses, not one: a busy event loop can stall a probe
+                        // for a moment, and reloading on that would throw away a live page.
+                        if (misses >= 2 && !serverWentAway) {
+                            serverWentAway = true;
+                            awaySince = System.currentTimeMillis();
+                            Diag.report("watch: server stopped answering");
+                        }
+                        // A frozen Termux answers nothing while its socket stays open (Android's
+                        // cached-app freezer, which is what switching to another app causes), and
+                        // the only thing that lifts that freeze is an explicit intent into Termux.
+                        // The bridge is that intent; without it the page waits forever.
+                        long now = System.currentTimeMillis();
+                        if (serverWentAway && now - lastNudgeAt > NUDGE_MIN_INTERVAL_MS) {
+                            lastNudgeAt = now;
+                            Diag.report("watch: nudging Termux to unfreeze the server");
+                            TermuxRun.send(MainActivity.this, TermuxRun.BRIDGE_SCRIPT);
+                        }
+                    }
+                    try {
+                        Thread.sleep(3000L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+        }, "dsh-server-watch");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void stopForegroundWatch() {
+        foregroundWatchRunning = false;
+    }
+
+    /** @return whether the loopback server answers at all — any status, including 401. */
+    private boolean serverAnswers() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(BASE_URL + "/").openConnection();
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(2000);
+            connection.getResponseCode();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    /**
+     * Reload the page that survived a server restart.
+     *
+     * Debounced, and skipped while the splash is up (a boot is already in flight then). The page
+     * is the only place the stale turn state lives, so reloading it is the whole fix.
+     */
+    private void reloadAfterRestart() {
+        if (System.currentTimeMillis() - lastAutoReloadAt < 180000L) return;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                if (web == null || isSplashVisible()) return;
+                if (System.currentTimeMillis() - lastAutoReloadAt < 180000L) return;
+                lastAutoReloadAt = System.currentTimeMillis();
+                Diag.report("watch: reloading the page after a long outage");
+                web.reload();
             }
         });
     }
@@ -783,6 +965,7 @@ public class MainActivity extends Activity {
             public void run() {
                 if (generation != bootGeneration) return;
                 attachWebView();
+                loadingPage = true;
                 showStatus("正在加载界面…", url, true);
                 web.loadUrl(url);
             }
@@ -930,6 +1113,20 @@ public class MainActivity extends Activity {
                     }
                 });
             }
+
+            /**
+             * Ask Termux to (re)start the status endpoint on 3098.
+             *
+             * <p>The settings page reads and writes the session initialization prompt through
+             * that endpoint, because the prompt is `$DSH_HOME/AGENTS.md` — inside Termux's home
+             * directory, which this app's UID cannot write (a direct attempt fails with
+             * AccessDeniedException). The endpoint exits once idle, so the page nudges it here
+             * and retries while it comes back.
+             */
+            @JavascriptInterface
+            public void ensureStatusDaemon() {
+                TermuxRun.send(MainActivity.this, TermuxRun.BRIDGE_SCRIPT, "--status");
+            }
         }, "dshNative");
 
         web.setWebViewClient(new WebViewClient() {
@@ -946,6 +1143,8 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                // The token lives in the query string; the path alone is what identifies the load.
+                Diag.report("page: finished " + (url == null ? "?" : url.split("\\?")[0]));
                 hideSplash();
             }
 
@@ -953,6 +1152,8 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request != null && request.isForMainFrame()) {
+                    Diag.report("page: main-frame error "
+                            + (error == null ? "?" : error.getErrorCode() + " " + error.getDescription()));
                     showBootFailure(bootGeneration);
                 }
             }

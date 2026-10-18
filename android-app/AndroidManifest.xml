@@ -12,6 +12,10 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Drives the Xiaomi Super Island notification that shows the work state. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keeps the loopback dsh server warm: Termux gets force-stopped when its recent-tasks
+         entry is cleared, which takes the detached `dsh web` process down with it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Package visibility (API 30+): we must be able to resolve Termux and its API app. -->
     <queries>
@@ -47,5 +51,18 @@
                 <data android:scheme="dshapp" />
             </intent-filter>
         </activity>
+
+        <!-- `specialUse`: the honest type for "keep a local service reachable". The subtype is
+             required by Android 14 when a service declares this type. `stopWithTask=false`
+             keeps it alive when the app's card is dismissed from the recent-tasks list. -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Probe the loopback DSH server and restart it after Android kills the Termux process tree" />
+        </service>
     </application>
 </manifest>
