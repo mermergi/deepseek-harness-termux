@@ -768,6 +768,256 @@ if (existsSync(generalSettingsPath)) {
   problems.push(`restart button: ${generalSettingsPath} missing`)
 }
 
+// 24. Session initialization: a default prompt and a default agent preset.
+//
+// Both answer the same question — "how does a new session start" — so they live on
+// the General settings page, below the restart button patch 14 put there.
+//
+// The prompt is `$DSH_HOME/AGENTS.md`, the agent loader's *user-global* instruction
+// file: `discoverInstructionFiles()` adds it to every session's system prompt, so
+// writing it here is what makes it a default for each new session (and, because the
+// loader reconciles instruction files, an edit reaches the current session too).
+// Web content cannot write into Termux's home, so MainActivity exposes
+// `dshNative.readStartupPrompt() / writeStartupPrompt()`.
+//
+// The preset is the `agent-preset-registry` settings document's `selectedDefault`,
+// read with `settings/describe` and written with `settings/update` (with the fresh
+// `expectedRevision`, or the write is refused). That is the same default the
+// new-session hero picker starts from.
+const startupPromptMarker = 'ANDROID_PATCH_STARTUP_PROMPT'
+if (existsSync(generalSettingsPath)) {
+  const source = readFileSync(generalSettingsPath, 'utf8')
+  // Rewrite the whole section when it is missing *or* carries the first cut of this patch:
+  // that cut declared `prompts` while rendering `presets` (which blanked the page) and called
+  // native file methods the app cannot use at all — Termux's home belongs to another UID, so
+  // writing there answers AccessDeniedException.
+  const staleCut = source.includes('const [prompts, setPresets]') || source.includes('readStartupPrompt')
+  if (!source.includes(startupPromptMarker) || staleCut) {
+    // Matches patch 14's GeneralSection whether it was applied just now or by an
+    // earlier launch: any line starting with exactly two tabs and a closing brace ends it.
+    const existing = /\t\tfunction GeneralSection\(\{ renderSlot \}\) \{[\s\S]*?\n\t\t\}/.exec(source)
+    if (existing === null) {
+      problems.push(`startup prompt: GeneralSection not found in ${generalSettingsPath}`)
+    } else {
+      const generalSection = `\t\tfunction GeneralSection({ renderSlot }) {
+\t\t\t// ANDROID_PATCH_RESTART_BUTTON: the app shell can restart the dsh server;
+\t\t\t// expose that here, where users look for settings, instead of only on the
+\t\t\t// splash screen that appears when booting already failed.
+\t\t\t// ${startupPromptMarker}: the same page edits the session initialization prompt
+\t\t\t// ($DSH_HOME/AGENTS.md, which the agent loader reads for every session) and the
+\t\t\t// default agent preset, because both decide how a new session starts.
+\t\t\tconst [restarting, setRestarting] = react.useState(false);
+\t\t\tconst [prompt, setPrompt] = react.useState("");
+\t\t\tconst [promptPath, setPromptPath] = react.useState("$DSH_HOME/AGENTS.md");
+\t\t\tconst [promptStatus, setPromptStatus] = react.useState("");
+\t\t\tconst [presets, setPresets] = react.useState([]);
+\t\t\tconst [defaultPreset, setDefaultPreset] = react.useState("");
+\t\t\tconst bridge = typeof window !== "undefined" ? window.dshNative : void 0;
+\t\t\tconst canRestart = bridge !== void 0;
+\t\t\tconst rpcId = react.useRef(0);
+\t\t\tconst rpc = react.useCallback((method, args) => {
+\t\t\t\trpcId.current += 1;
+\t\t\t\treturn fetch("/api/" + method, {
+\t\t\t\t\tmethod: "POST",
+\t\t\t\t\theaders: { "content-type": "application/json" },
+\t\t\t\t\tbody: JSON.stringify({
+\t\t\t\t\t\ttype: "client-request",
+\t\t\t\t\t\trpcId: "android-settings-" + rpcId.current,
+\t\t\t\t\t\tmethod: method,
+\t\t\t\t\t\tpayload: { args: args }
+\t\t\t\t\t})
+\t\t\t\t}).then((response) => response.json()).then((body) => (
+\t\t\t\t\tbody && body.result && body.result.ok === true ? body.result.value : void 0
+\t\t\t\t)).catch(() => void 0);
+\t\t\t}, []);
+\t\t\tconst presetNamespace = (value) => (
+\t\t\t\tvalue && Array.isArray(value.namespaces)
+\t\t\t\t\t? value.namespaces.find((entry) => entry.ns === "agent-preset-registry")
+\t\t\t\t\t: void 0
+\t\t\t);
+\t\t\t// The prompt file lives in Termux's home directory, which this app cannot touch: a
+\t\t\t// different UID owns /data/data/com.termux (a direct write answers AccessDenied).
+\t\t\t// So the edit goes over loopback to the status endpoint Termux already runs, and
+\t\t\t// that endpoint does the file work as the Termux user.
+\t\t\tconst PROMPT_ENDPOINT = "http://127.0.0.1:3098/prompt";
+\t\t\tconst PROMPT_KEY = "_Z2Fve3rcfvvahd4wDmLa0AvbxN061bp";
+\t\t\tconst promptRpc = (method, body) => {
+\t\t\t\tconst controller = new AbortController();
+\t\t\t\tconst timer = setTimeout(() => controller.abort(), 2500);
+\t\t\t\tconst headers = { "x-dsh-key": PROMPT_KEY };
+\t\t\t\tif (body !== void 0) headers["content-type"] = "application/json";
+\t\t\t\treturn fetch(PROMPT_ENDPOINT, {
+\t\t\t\t\tmethod: method,
+\t\t\t\t\theaders: headers,
+\t\t\t\t\tbody: body === void 0 ? void 0 : JSON.stringify(body),
+\t\t\t\t\tsignal: controller.signal
+\t\t\t\t}).then((response) => response.json()).catch(() => void 0).finally(() => clearTimeout(timer));
+\t\t\t};
+\t\t\t// The endpoint is not always awake: it exits after a while with no requests. Nudge it
+\t\t\t// through the app (a Termux RUN_COMMAND) and keep retrying while it comes up.
+\t\t\tconst loadPrompt = (attempt) => {
+\t\t\t\tpromptRpc("GET").then((value) => {
+\t\t\t\t\tif (value && typeof value.text === "string") {
+\t\t\t\t\t\tsetPrompt(value.text);
+\t\t\t\t\t\tif (value.path) setPromptPath(value.path);
+\t\t\t\t\t\tsetPromptStatus("");
+\t\t\t\t\t\treturn;
+\t\t\t\t\t}
+\t\t\t\t\tif (attempt >= 5) {
+\t\t\t\t\t\tsetPromptStatus("连不上 Termux 侧的状态服务（3098），稍后重试");
+\t\t\t\t\t\treturn;
+\t\t\t\t\t}
+\t\t\t\t\tsetPromptStatus(attempt === 0 ? "正在启动 Termux 侧的状态服务…" : "仍在等待状态服务…");
+\t\t\t\t\tif (attempt === 0 && bridge.ensureStatusDaemon) {
+\t\t\t\t\t\ttry {
+\t\t\t\t\t\t\tbridge.ensureStatusDaemon();
+\t\t\t\t\t\t} catch (error) {
+\t\t\t\t\t\t\t/* the retry loop reports the outcome */
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t\tsetTimeout(() => loadPrompt(attempt + 1), 900);
+\t\t\t\t});
+\t\t\t};
+\t\t\treact.useEffect(() => {
+\t\t\t\tif (bridge === void 0) return;
+\t\t\t\tloadPrompt(0);
+\t\t\t\trpc("agentPresets/list", {}).then((value) => {
+\t\t\t\t\tif (value && Array.isArray(value.presets)) setPresets(value.presets);
+\t\t\t\t});
+\t\t\t\trpc("settings/describe", {}).then((value) => {
+\t\t\t\t\tconst ns = presetNamespace(value);
+\t\t\t\t\tif (ns && ns.value) setDefaultPreset(String(ns.value.selectedDefault || ""));
+\t\t\t\t});
+\t\t\t}, [bridge, rpc]);
+\t\t\tconst savePrompt = () => {
+\t\t\t\tsetPromptStatus("正在保存…");
+\t\t\t\tpromptRpc("POST", { text: prompt }).then((value) => {
+\t\t\t\t\tif (value && typeof value.text === "string") {
+\t\t\t\t\t\tsetPromptStatus(value.text.trim() === ""
+\t\t\t\t\t\t\t? "已清空 · 新会话不再附带初始化提示词"
+\t\t\t\t\t\t\t: "已保存 · 新会话的系统提示词会带上它");
+\t\t\t\t\t\treturn;
+\t\t\t\t\t}
+\t\t\t\t\tif (bridge.ensureStatusDaemon) {
+\t\t\t\t\t\ttry {
+\t\t\t\t\t\t\tbridge.ensureStatusDaemon();
+\t\t\t\t\t\t} catch (error) {
+\t\t\t\t\t\t\t/* retried below */
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t\tsetTimeout(() => {
+\t\t\t\t\t\tpromptRpc("POST", { text: prompt }).then((retry) => {
+\t\t\t\t\t\t\tsetPromptStatus(retry && typeof retry.text === "string"
+\t\t\t\t\t\t\t\t? "已保存 · 新会话的系统提示词会带上它"
+\t\t\t\t\t\t\t\t: "保存失败：Termux 侧的状态服务没起来");
+\t\t\t\t\t\t});
+\t\t\t\t\t}, 1200);
+\t\t\t\t});
+\t\t\t};
+\t\t\tconst choosePreset = (id) => {
+\t\t\t\trpc("settings/describe", {}).then((value) => {
+\t\t\t\t\tconst ns = presetNamespace(value);
+\t\t\t\t\tif (ns === void 0) {
+\t\t\t\t\t\tsetPromptStatus("读不到预设设置，稍后再试");
+\t\t\t\t\t\treturn void 0;
+\t\t\t\t\t}
+\t\t\t\t\treturn rpc("settings/update", {
+\t\t\t\t\t\tns: "agent-preset-registry",
+\t\t\t\t\t\tpatch: { selectedDefault: id },
+\t\t\t\t\t\texpectedRevision: ns.revision
+\t\t\t\t\t}).then((updated) => {
+\t\t\t\t\t\tif (updated === void 0) {
+\t\t\t\t\t\t\tsetPromptStatus("切换失败，稍后再试");
+\t\t\t\t\t\t\treturn;
+\t\t\t\t\t\t}
+\t\t\t\t\t\tsetDefaultPreset(id);
+\t\t\t\t\t\tsetPromptStatus("新会话默认预设已切换为 " + id);
+\t\t\t\t\t});
+\t\t\t\t});
+\t\t\t};
+\t\t\tconst rowStyle = { display: "flex", flexWrap: "wrap", gap: "8px", padding: "8px 0" };
+\t\t\tconst noteStyle = { opacity: 0.7, fontSize: "0.85em", paddingBottom: "8px", lineHeight: 1.5 };
+\t\t\tconst areaStyle = {
+\t\t\t\twidth: "100%", minHeight: "120px", boxSizing: "border-box", font: "inherit",
+\t\t\t\tpadding: "8px", borderRadius: "8px", background: "transparent", color: "inherit",
+\t\t\t\tborder: "1px solid rgba(127,127,127,0.35)", resize: "vertical"
+\t\t\t};
+\t\t\treturn (0, react_jsx_runtime.jsxs)("div", {
+\t\t\t\tclassName: GeneralSection_module_css_default.section,
+\t\t\t\tchildren: [renderSlot("settings.general.item", {}), bridge !== void 0 && (0, react_jsx_runtime.jsxs)("div", {
+\t\t\t\t\tstyle: { padding: "16px 0 8px", borderTop: "1px solid rgba(127,127,127,0.2)" },
+\t\t\t\t\tchildren: [
+\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", { style: { fontWeight: 600 }, children: "新会话初始化提示词" }),
+\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\t\t\tstyle: noteStyle,
+\t\t\t\t\t\t\tchildren: "写入 " + promptPath
+\t\t\t\t\t\t\t\t+ "，每个新会话的系统提示词都会带上它；清空后保存即删除。"
+\t\t\t\t\t\t}),
+\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("textarea", {
+\t\t\t\t\t\t\tvalue: prompt,
+\t\t\t\t\t\t\tonChange: (event) => setPrompt(event.target.value),
+\t\t\t\t\t\t\tstyle: areaStyle,
+\t\t\t\t\t\t\tplaceholder: "例如：始终用中文回答；改动前先跑一遍测试；不要动 handpan-app/ 目录。"
+\t\t\t\t\t\t}),
+\t\t\t\t\t\t(0, react_jsx_runtime.jsxs)("div", { style: rowStyle, children: [
+\t\t\t\t\t\t\t(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+\t\t\t\t\t\t\t\tvariant: "outline", size: "sm", onClick: savePrompt, children: "保存提示词"
+\t\t\t\t\t\t\t}),
+\t\t\t\t\t\t\t(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+\t\t\t\t\t\t\t\tvariant: "outline",
+\t\t\t\t\t\t\t\tsize: "sm",
+\t\t\t\t\t\t\t\tonClick: () => { setPrompt(""); setPromptStatus(""); },
+\t\t\t\t\t\t\t\tchildren: "清空编辑框"
+\t\t\t\t\t\t\t})
+\t\t\t\t\t\t] }),
+\t\t\t\t\t\tpresets.length > 0 && (0, react_jsx_runtime.jsxs)("div", {
+\t\t\t\t\t\t\tstyle: { paddingTop: "8px" },
+\t\t\t\t\t\t\tchildren: [
+\t\t\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", { style: { fontWeight: 600 }, children: "新会话默认预设" }),
+\t\t\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\t\t\t\t\tstyle: noteStyle,
+\t\t\t\t\t\t\t\t\tchildren: "新建会话时的默认模式；会话里仍可用顶部的预设选择器临时切换。"
+\t\t\t\t\t\t\t\t}),
+\t\t\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", { style: rowStyle, children: presets.map((preset) => (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+\t\t\t\t\t\t\t\t\tvariant: "outline",
+\t\t\t\t\t\t\t\t\tsize: "sm",
+\t\t\t\t\t\t\t\t\tonClick: () => choosePreset(preset.id),
+\t\t\t\t\t\t\t\t\tchildren: (preset.name || preset.id) + (preset.id === defaultPreset ? " ✓" : "")
+\t\t\t\t\t\t\t\t}, preset.id)) })
+\t\t\t\t\t\t\t]
+\t\t\t\t\t\t}),
+\t\t\t\t\t\tpromptStatus !== "" && (0, react_jsx_runtime.jsx)("div", { style: noteStyle, children: promptStatus }),
+\t\t\t\t\t\t(0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\t\t\tstyle: { paddingTop: "12px" },
+\t\t\t\t\t\t\tchildren: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+\t\t\t\t\t\t\t\tvariant: "outline",
+\t\t\t\t\t\t\t\tsize: "sm",
+\t\t\t\t\t\t\t\tdisabled: restarting,
+\t\t\t\t\t\t\t\tonClick: () => {
+\t\t\t\t\t\t\t\t\tif (!window.confirm("重启 DSH 服务？\\n\\n正在进行的对话会被中断，页面稍后会自动重新连接。")) return;
+\t\t\t\t\t\t\t\t\tsetRestarting(true);
+\t\t\t\t\t\t\t\t\ttry {
+\t\t\t\t\t\t\t\t\t\twindow.dshNative.restartServer();
+\t\t\t\t\t\t\t\t\t} catch (error) {
+\t\t\t\t\t\t\t\t\t\tsetRestarting(false);
+\t\t\t\t\t\t\t\t\t\twindow.alert("重启失败：" + (error && error.message ? error.message : error));
+\t\t\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\t\t},
+\t\t\t\t\t\t\t\tchildren: restarting ? "正在重启…" : "重启 DSH 服务"
+\t\t\t\t\t\t\t})
+\t\t\t\t\t\t})
+\t\t\t\t\t]
+\t\t\t\t})]
+\t\t\t});
+\t\t}`
+      writeFileSync(generalSettingsPath, source.replace(existing[0], generalSection))
+      console.log('settings: session initialization prompt + default preset added to the General page')
+    }
+  }
+} else {
+  problems.push(`startup prompt: ${generalSettingsPath} missing`)
+}
+
 // 15. Link profile-installed plugins into the install directory.
 //
 // Patches 1-14 aside, this exists because of patch 10. Restoring the alpha.1
