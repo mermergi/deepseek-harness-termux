@@ -1,0 +1,14 @@
+# Session initialization prompt, registered as a system-prompt section.
+#
+# The bundled `@deepseek-ai/dsh-agent-instructions` delivers $DSH_HOME/AGENTS.md as a
+# workspace-instructions *reminder* — a user-role message attached to the turn — so in the
+# trajectory it appears after the first user message, not inside the initial system prompt.
+# This row registers the same file as a real system-prompt section instead, which is what
+# puts it into the "初始系统提示词" the session starts from, and gives it system-role weight.
+#
+# Both can be on at once: the reminder is how an edit mid-session reaches the model, this
+# section is how the session *starts* with it. To keep only one, disable the other row in
+# the profile patch (`disabled: true`).
+- insert:
+    - id: startup-prompt
+      name: '@local/dsh-startup-prompt/plugin/index.js'

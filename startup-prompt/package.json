@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-startup-prompt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Registers $DSH_HOME/AGENTS.md as a system-prompt section, so the session initialization prompt is part of the initial system prompt instead of only a per-turn workspace-instructions reminder.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
