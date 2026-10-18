@@ -74,7 +74,10 @@ if [ "$LIST" = 1 ]; then
   echo "可用探测（$PROBE_DIR_SRC）："
   for f in "$PROBE_DIR_SRC"/*.sh; do
     [ -e "$f" ] || continue
-    printf '  %-14s %s\n' "$(basename "$f" .sh)" "$(sed -n '2s/^# *//p' "$f")"
+    # 取第一行真正的注释（跳过 shebang）——probes 文件头第一行就是"假设"。
+    # 有的探测带 #! 有的不带，写死行号会串行。
+    sum="$(awk '/^#!/{next} /^#/{sub(/^#+[[:space:]]*/,""); print; exit}' "$f")"
+    printf '  %-14s %s\n' "$(basename "$f" .sh)" "$sum"
   done
   echo
   echo "提示：任务不在列表里，就照 probes/ 里任意一个的格式现场写一个——"
@@ -112,15 +115,25 @@ kv "root"    "$( [ "$(id -u 2>/dev/null)" = 0 ] && echo yes || echo no )"
 kv "SELinux" "$(tr -d '\0' < /proc/self/attr/current 2>/dev/null || echo '(读不到)')"
 
 sec "2b. 目录能力（实测，不看配置）"
-printf '  %-40s %-5s %-5s %s\n' 目录 存在 可写 可执行
+printf '  %-40s %-5s %-5s %s\n' 目录 存在 可写 直接执行
+NOEXEC=""
 for d in "$PROJ" "$TMPROOT" "$HOME" /tmp /data/local/tmp /sdcard; do
   [ -n "$d" ] || continue
   e=no; w=no; x=no
   if [ -d "$d" ]; then
     e=yes; f="$d/.envprobe.$$"
     if ( printf 'exit 0\n' > "$f" ) 2>/dev/null; then
-      w=yes; bash "$f" >/dev/null 2>&1 && x=yes; rm -f "$f"
+      w=yes
+      # 必须真 execve（rc=7 才算数），不能用 `bash "$f"` 代替：
+      # noexec 挂载点上 bash 照样能解释脚本并返回 0 —— 那是假阳性。
+      # /sdcard 实测：直接执行 rc=126，bash 解释 rc=7。
+      printf '#!%s\nexit 7\n' "$(command -v bash)" > "$f" 2>/dev/null
+      chmod +x "$f" 2>/dev/null
+      "$f" >/dev/null 2>&1
+      [ $? -eq 7 ] && x=yes
+      rm -f "$f"
     fi
+    [ "$e" = yes ] && [ "$w" = yes ] && [ "$x" = no ] && NOEXEC="${NOEXEC:+$NOEXEC,}$d"
   fi
   printf '  %-40s %-5s %-5s %s\n' "$d" "$e" "$w" "$x"
 done
@@ -198,6 +211,7 @@ fi
 sec "8. 由以上事实推导出的约束"
 [ "$LIBC" = bionic ] && note "bionic libc：预编译 glibc/linux-arm64 原生模块加载不了，优先 wasm/JS 回退或现场编译"
 [ ! -w /tmp ] && note "/tmp 不可写：临时文件一律用 \$TMPDIR = ${TMPDIR:-?}"
+[ -n "$NOEXEC" ] && note "noexec 挂载点：$NOEXEC —— 里面的脚本用解释器显式跑（bash x.sh）没问题，但 execve 会 rc=126，别写成靠 shebang 直接执行"
 if [ "$IS_ANDROID" = yes ] && [ "${SDK:-0}" -ge 31 ] 2>/dev/null; then
   note "Android API ${SDK}：phantom process killer 可能杀掉长时后台子进程，长任务要分片或加心跳"
 fi
