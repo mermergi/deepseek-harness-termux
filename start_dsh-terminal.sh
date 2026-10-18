@@ -12,6 +12,15 @@ cd "$HOME" || exit 1
 # 启动前重做安卓兼容修补（幂等）：重装 dsh 后会自动修回来
 node "$DSH_DIR/android-fix.mjs" || exit 1
 
+# 把这次启动绑定到当前安装树代际（.tree-id 由 upgrade.mjs / ensure-server.mjs 维护）。
+# 服务器运行时代码是内存里的，静态资源却从磁盘读：如果安装树被换掉而进程还活着，
+# 浏览器就会拿到「新客户端 + 旧 API」的混合页面（插件全部 pending）。App 侧的
+# ensure-server.mjs 用这个环境变量识别并踢掉这种跨代际的老进程，见 .dsh-app/。
+if [ -f "$DSH_DIR/.tree-id" ]; then
+    DSH_TREE_ID="$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' "$DSH_DIR/.tree-id" | head -1)"
+    [ -n "$DSH_TREE_ID" ] && export DSH_TREE_ID
+fi
+
 # 安卓上没有可用的沙箱后端（bwrap / Landlock 都不存在），
 # 只能让命令以非受限模式运行并关闭审批询问，否则 shell 工具会一律拒绝执行
 # 注意：这意味着 agent 拥有 Termux 的完整权限，不需要就删掉这行

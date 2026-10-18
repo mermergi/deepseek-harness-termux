@@ -93,6 +93,15 @@ open_browser() {
     # 只能让命令以非受限模式运行并关闭审批询问，否则 shell 工具会一律拒绝执行
     export DSH_PERMISSION_MODE=danger-full-access
 
+    # 把这次启动绑定到当前安装树代际（.tree-id 由 upgrade.mjs / ensure-server.mjs 维护）。
+    # 服务器代码在内存里、静态资源却从磁盘读：安装树被换掉而进程还活着时，浏览器会拿到
+    # 「新客户端 + 旧 API」的混合页面（插件全部 pending）。App 侧 ensure-server.mjs 按这个
+    # 变量识别并踢掉跨代际的老进程。
+    if [ -f "$DSH_DIR/.tree-id" ]; then
+        DSH_TREE_ID="$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' "$DSH_DIR/.tree-id" | head -1)"
+        [ -n "$DSH_TREE_ID" ] && export DSH_TREE_ID
+    fi
+
     # 防 Android 后台清理（和语音引擎同一套路）
     command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null && echo "wakelock 已获取"
 
