@@ -91,9 +91,13 @@ const stub = {
         resolve(request) {
           return { command: request.command, timeoutMs: request.timeoutMs }
         },
-        run(spec) {
+        // 0.2.0-rc.2 shape: `run()` is gone; `execute()` hands back a handle
+        // whose `result()` settles the foreground outcome.
+        execute(spec) {
           COMMANDS.push(String(spec.command))
-          return Promise.resolve({ exitCode: 0, timedOut: false, aborted: false, stdout: { text: canned(String(spec.command)) }, stderr: { text: '' } })
+          return Promise.resolve({
+            result: () => Promise.resolve({ exitCode: 0, timedOut: false, aborted: false, stdout: { text: canned(String(spec.command)) }, stderr: { text: '' } }),
+          })
         },
       }
     }
@@ -187,6 +191,43 @@ for (const [name, args] of calls) {
 // The alias step must actually write the learned file, not just report ok.
 if (COMMANDS.filter((entry) => entry.includes('aliases.json.tmp')).length === 0) {
   problems.push('phone_app alias did not persist to aliases.json')
+}
+
+// ── legacy seam: a shell that exposes only the pre-0.2 `run()` ─────────────
+// The generated module supports both generations of the `ctx.shell` seam. The
+// pass above exercises the 0.2.0-rc.2 shape; this one pins the fallback so the
+// compatibility branch cannot rot into dead code. A module that only handled
+// `execute` would pass everything above and still break on an older harness.
+{
+  const before = COMMANDS.length
+  const legacyCtx = {
+    tools: { register(definition) { REGISTERED.set(String(definition.name), definition) } },
+    on() {},
+    get(name) {
+      if (name !== 'shell') return undefined
+      return {
+        resolve(request) {
+          return { command: request.command, timeoutMs: request.timeoutMs }
+        },
+        run(spec) {
+          COMMANDS.push(String(spec.command))
+          return Promise.resolve({ exitCode: 0, timedOut: false, aborted: false, stdout: { text: canned(String(spec.command)) }, stderr: { text: '' } })
+        },
+      }
+    },
+  }
+  try {
+    mod.apply(legacyCtx)
+    const tool = REGISTERED.get('phone_status')
+    if (tool === undefined) problems.push('legacy seam: phone_status was not registered')
+    else {
+      await tool.execute({}, { signal: undefined })
+      if (COMMANDS.length === before) problems.push('legacy seam: phone_status ran no command')
+    }
+  } catch (error) {
+    problems.push('legacy seam (`run()`-only shell) threw: ' + String(error && error.message ? error.message : error))
+  }
+  console.log('  runs   ' + 'legacy shell seam'.padEnd(18) + ' run()-only service accepted')
 }
 
 console.log('module:   ' + target)

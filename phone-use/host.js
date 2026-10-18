@@ -216,7 +216,33 @@ return {
         stdoutMaxBytes: opts.stdoutMaxBytes === undefined ? 4 * 1024 * 1024 : opts.stdoutMaxBytes,
       }
       if (opts.signal !== undefined) request.signal = opts.signal
-      return await shell.run(shell.resolve(request))
+      const spec = shell.resolve(request)
+
+      // The shell seam moved from a one-shot `run(spec)` to
+      // `execute(spec)` → handle → `result()`; `run` is simply gone in
+      // 0.2.0-rc.2, so calling it unconditionally died with
+      // "shell.run is not a function" on every phone_* call. Support both
+      // shapes instead of pinning one harness version.
+      if (typeof shell.run === 'function') return await shell.run(spec)
+
+      const handle = await shell.execute(spec)
+      try {
+        return await handle.result()
+      } catch (error) {
+        // `result()` rejects only for infrastructure failures (a spawn that
+        // never produced a process); a non-zero exit resolves instead. Fold
+        // the rejection into the result shape this module consumes so callers
+        // report it like any other failed command.
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          aborted: false,
+          timeoutMs: spec.timeoutMs,
+          stdout: { text: '' },
+          stderr: { text: error instanceof Error ? error.message : String(error) },
+        }
+      }
     }
 
     async function resolveAdb() {

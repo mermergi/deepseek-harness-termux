@@ -46,12 +46,18 @@ function runShell(spec) {
   }
 }
 
+// Mirrors the 0.2.0-rc.2 shell seam: `resolve()` → spec, `execute(spec)` →
+// handle, `handle.result()` → the foreground result. There is no `run()`.
+// An earlier version of this stub implemented `run()` only, which is exactly
+// why the plugin's `shell.run` call kept passing here while every phone_* tool
+// died in the real harness — the double was built from the same stale idea as
+// the code under test.
 const shellService = {
   resolve(request) {
     return { command: request.command, timeoutMs: request.timeoutMs, stdoutMaxBytes: request.stdoutMaxBytes }
   },
-  run(spec) {
-    return Promise.resolve(runShell(spec))
+  execute(spec) {
+    return Promise.resolve({ result: () => Promise.resolve(runShell(spec)) })
   },
 }
 
