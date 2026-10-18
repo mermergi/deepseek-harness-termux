@@ -18,3 +18,15 @@ android-app/out/
 android-app/tools/android.jar
 android-app/tools/icon-preview.png
 android-app/keystore.jks
+
+# Sibling projects that happen to live under this working directory, and device scratch
+# (a pid file from a local bridge run). None of them belong to this repository.
+handpan-app/
+qwen-image-app/
+qwen-image-chat/
+qwen-standalone/
+wssrv.pid
+
+# Scratch Kotlin from UI experiments. The shell app itself is plain Java, so a root-level
+# .kt file is never part of a build.
+/*.kt
