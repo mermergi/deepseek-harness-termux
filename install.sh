@@ -7,7 +7,7 @@
 #   bash install.sh                      # 安装到 ~/dsh
 #   bash install.sh --deps               # 顺带用 pkg 装 Termux 依赖
 #   bash install.sh --dir ~/foo          # 自定义安装目录
-#   bash install.sh --version 0.1.5-rc.1 # 固定版本（便于复现）
+#   bash install.sh --version 0.2.1-rc.2 # 固定版本（便于复现）
 #
 # 仓库：https://github.com/mermergi/deepseek-harness-termux
 set -euo pipefail
@@ -66,14 +66,16 @@ fi
 say "Node $(node -p 'process.versions.node') / npm $(npm -v)"
 
 # ── 2. 安装 dsh ───────────────────────────────────────────────
-say "安装 dsh 到 $DIR（515 个包，约 300MB，首次较慢）"
+say "安装 dsh 到 $DIR（约 600 个包，约 320MB，首次较慢）"
 mkdir -p "$DIR"
 cd "$DIR"
 
+# --ignore-scripts：dsh 依赖的 koffi 会在 postinstall 里跑 CMake 编译，Termux 上必然失败，
+# 而 npm 一遇到脚本失败就会放弃整次安装。本机不加载 koffi 绑定，跳过脚本才是正确做法。
 if [ -n "$DSH_VERSION" ]; then
-    npm install "@deepseek-ai/dsh@$DSH_VERSION"
+    npm install --ignore-scripts "@deepseek-ai/dsh@$DSH_VERSION"
 else
-    npm install @deepseek-ai/dsh
+    npm install --ignore-scripts @deepseek-ai/dsh
 fi
 
 # sharp 没有 android-arm64 预编译，缺了它附件插件会让 dsh 在启动阶段就崩

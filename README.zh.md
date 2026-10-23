@@ -17,9 +17,12 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [做成安卓 App](#做成安卓-app可选)
 - [PhoneUse 插件（可选）](#phoneuse-插件可选)
 - [安全提示（务必读）](#安全提示务必读)
+- [仓库结构](#仓库结构)
 - [补丁清单](#补丁清单)
+- [新会话的默认提示词](#新会话的默认提示词)
 - [装插件](#装插件)
 - [重启](#重启)
+- [安全升级（推荐）](#安全升级推荐)
 - [重装或升级之后](#重装或升级之后)
 - [验证与说明](#验证与说明)
 
@@ -51,7 +54,7 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Node.js | `^22.19.0 \|\| >=24.0.0`（dsh 的 engines 要求，实测 v26.4.0） |
 | 编译工具链 | `clang` + `make` + `python`（node-pty 在安卓上没有预编译，要靠 node-gyp 现编） |
 | 搜索工具 | `ripgrep`（`pkg install ripgrep`）：`@vscode/ripgrep` 没有安卓构建，见补丁 6；PATH 里没有 `rg` 时 `glob`/`grep` 工具不可用 |
-| 磁盘 | 约 300 MB（dsh 会拉 515 个 npm 包） |
+| 磁盘 | 约 320 MB（dsh 会拉约 600 个 npm 包；`0.2.1-rc.2` 实测 608 个） |
 | 网络 | 能访问 npm registry 和你选的模型 API（DeepSeek 官方或兼容网关） |
 
 ## 快速开始
@@ -70,7 +73,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | 顺带用 `pkg install` 安装 Termux 依赖（nodejs python clang make） |
 | `--dir ~/foo` | 换安装目录（会自动写进启动脚本的 `DSH_DIR`） |
-| `--version 0.1.5-rc.1` | 固定 dsh 版本，便于复现 |
+| `--version 0.2.1-rc.2` | 固定 dsh 版本，便于复现 |
 
 ### 方式 B：手动逐步
 
@@ -87,16 +90,17 @@ node -v   # 需要 >= 24（或 22.19+）
 
 ```sh
 mkdir -p ~/dsh && cd ~/dsh
-npm install @deepseek-ai/dsh
+npm install --ignore-scripts @deepseek-ai/dsh
 npm install @img/sharp-wasm32 sharp
 ```
 
-两个要点：
+三个要点：
 
 - **不要用 `npx`。** `npx` 会把包塞进临时目录，补丁没有稳定的落位点。装到 `~/dsh` 这类固定目录。
 - **必须补 `@img/sharp-wasm32`。** `sharp` 没有 android-arm64 预编译，缺了它附件插件会在**启动阶段**直接让 dsh 崩掉，所以这条不是可选项。
+- **装 dsh 时必须加 `--ignore-scripts`。** dsh 的依赖 `koffi` 会在 postinstall 里跑 CMake 编译，在 Termux 上必然失败，而 npm 一旦遇到脚本失败就会放弃整次安装。这台机器上没有任何东西会加载 koffi 绑定——能正常运行的安装里也没有 koffi 的二进制产物。
 
-> 想复现本文档验证过的版本：`0.1.5-rc.1`（写本文时的 `latest`）或 `0.1.6-alpha.1`（`alpha` 标签，需显式指定版本才装得到）。
+> 想复现本文档验证过的版本：`0.2.1-rc.2`（`next` 标签；`latest` 仍停在 `0.2.0-rc.2`）。见[装哪个版本](#装哪个版本)。
 
 #### 3. 打补丁
 
@@ -158,7 +162,7 @@ termux-open android-app/prebuilt/dsh.apk       # 装现成的 APK，不需要构
 # bash android-app/tools/build.sh --install
 ```
 
-**APK 只是客户端（75 KB），DSH 本体在 Termux 里（约 271 MB）**，所以一台新手机是
+**APK 只是客户端（87 KB），DSH 本体在 Termux 里（约 313 MB）**，所以一台新手机是
 「先装 Termux 侧、再装 APK」，完整顺序见 [android-app/README.zh.md](android-app/README.zh.md#在一台新手机上装)。
 
 - **桌面图标、全屏、没有地址栏**：WebView 壳，返回键先在页面内后退。
@@ -169,6 +173,12 @@ termux-open android-app/prebuilt/dsh.apk       # 装现成的 APK，不需要构
   手柄永远贴在左或右边缘（20×52dp 半椭圆，贴右边像 `(`、贴左边像 `)`），用颜色区分状态；
   上下拖动移动位置，拖过屏幕中线翻到另一边。
   状态不是猜的——它读会话日志里最后一个 `turn/start` / `turn/end`，所以等模型和长工具调用都不会误判。
+- **它会自己把服务救回来**：前台常驻保活服务每 10 秒探一次 `http://127.0.0.1:3080/`，端口不响应就通过
+  `RUN_COMMAND` 调 bridge 重新拉起。这同时解决两件事：Android 把 Termux 冻结（socket 还在但完全
+  不应答），以及从最近任务划掉 Termux 导致进程被强杀；通知里带「停止保活」动作。探测跑在独立的
+  HandlerThread 上——放主线程会触发 `NetworkOnMainThreadException` 并被吞掉，早先那版就栽在这。
+- **新会话设置搬进了 App**：通用设置页有「新会话初始化提示词」（`$DSH_HOME/AGENTS.md`）、默认预设
+  选择和重启按钮（补丁 24）。提示词就是普通文件，Termux 里同样能改。
 - **和这个脚本共用日志**：都在 `~/.dsh-app/`。`start_dsh.sh` 的日志路径已从 `$TMPDIR`
   改到这里——`$TMPDIR` 会被 Termux 清空，而正在跑的 dsh 还在往那个已删除的 inode 里写，
   token 会凭空消失（详见 [android-app/README.zh.md](android-app/README.zh.md) 里那节）。
@@ -208,6 +218,20 @@ this host; refusing to run the command unconfined.
 
 **想收回**：删掉那一行 `export`（或改为 `read-only` / `workspace-write`）。代价是 shell / 终端类工具会重新变成不可用，只剩读写文件、搜索、网页等能力。
 
+## 仓库结构
+
+| 路径 | 是什么 |
+|---|---|
+| [`android-fix.mjs`](android-fix.mjs) | 24 条幂等兼容补丁；所有启动入口都会先跑它 |
+| [`install.sh`](install.sh) | 一条命令安装：依赖 → dsh → 补丁 → 启动器 |
+| [`start_dsh.sh`](start_dsh.sh)、[`start_dsh-terminal.sh`](start_dsh-terminal.sh) | Termux:Widget 静默启动器，及其带终端的孪生版 |
+| [`app-scripts/`](app-scripts/README.md) | App 驱动的那几个脚本，外加带护栏的升级器（`upgrade.mjs`）和它的两道保险 |
+| [`android-app/`](android-app/README.zh.md) | 本机自编译的 WebView 外壳 APK 与 Termux 侧 bridge |
+| [`startup-prompt/`](startup-prompt/) | 可选 bundle：把 `$DSH_HOME/AGENTS.md` 注册成 system-prompt 段 |
+| [`phone-use/`](phone-use/README.md)、[`phone-use-preset/`](phone-use-preset/README.md) | 可选的手机操作工具，以及承载它们的 preset bundle |
+| [`env-probe.sh`](env-probe.sh)、[`probes/`](probes/) | 按「假设 → 实验 → 对照」写的环境探测 |
+| [`shizuku-up.sh`](shizuku-up.sh) | 重启后恢复无线 ADB / Shizuku 通道 |
+
 ## 补丁清单
 
 共 24 条，编号与 `android-fix.mjs` 里的注释一致。
@@ -238,7 +262,7 @@ this host; refusing to run the command unconfined.
 | 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
 | 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
 
-**界面、插件与工具链**（12–23）：
+**界面、插件与工具链**（12–24）：
 
 | # | 现象 | 处理 |
 |---|---|---|
@@ -259,6 +283,16 @@ this host; refusing to run the command unconfined.
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
 **第 10、11 条值得单独记住**：它们是 `0.1.6-alpha.2` 相对 `alpha.1` 引入的，不补就完全起不来。第 10 条的根因是上游把一个**平台特定的原生依赖**接进了所有平台的启动必经路径，而那个包从没发布过 `android-arm64`。第 15 条是第 10 条的副作用：`link` 模式同时关掉了 profile 插件的解析路由。
+
+## 新会话的默认提示词
+
+通用设置页（补丁 24）可以直接编辑 `$DSH_HOME/AGENTS.md`——也就是 agent loader 的**用户全局**指令
+文件——并选择默认预设。这两项决定新会话怎么开始，都不需要再回 Termux 改文件。
+
+`$DSH_HOME/AGENTS.md` 默认是以「每轮附在用户消息后的 `<system-reminder>`」形式到达模型的，所以
+会话中途改动会立刻生效。如果你要的是让它进**初始系统提示词**（第一条用户消息之前、system 角色），
+可以装可选的 [`startup-prompt/`](startup-prompt/) bundle；两条路径并存，怎么只留一条写在它的
+README 里。
 
 ## 装插件
 
@@ -313,19 +347,25 @@ node ~/dsh/android-fix.mjs
 
 用本仓库的 `start_dsh.sh` 启动时这步会自动完成；走 App 的 bridge 时也会（每次拉起服务前都会重跑一次）。
 
+但这一步只重打补丁。**换版本**请走[带护栏的升级器](#安全升级推荐)：它是原子替换整棵树，而不是在正在运行的树上面再装一层。
+
 ### 装哪个版本
 
-**推荐 `0.1.6-alpha.2`**（当前实测可用的最新版）：
+**推荐 `0.2.1-rc.2`** —— 本机端到端验证过的版本（2026-10）：
 
 ```sh
 cd ~/dsh
-npm install @deepseek-ai/dsh@0.1.6-alpha.2
-node ~/dsh/android-fix.mjs     # 必需：第 10、11 条补丁不跑就起不来
+npm install --ignore-scripts \
+  @deepseek-ai/dsh@0.2.1-rc.2 @deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.2
+npm install @img/sharp-wasm32 sharp
+node ~/dsh/android-fix.mjs
 ```
 
-注意 npm 的 `latest` 标签仍停在 `0.1.5-rc.2`，所以要**显式写版本号**，直接 `npm install @deepseek-ai/dsh` 装不到它。
+npm 的 `next` 标签指向 `0.2.1-rc.2`；`latest` 仍停在 `0.2.0-rc.2`，那个也能跑。所以直接
+`npm install @deepseek-ai/dsh` 装到的是 `latest`，不是本文验证的版本。
 
-`0.1.6-alpha.2` 比 `alpha.1` 多两个**启动即崩**的问题（见补丁 10、11），都已在 `android-fix.mjs` 里处理。补完就能正常跑——本机实测通过。
+升级已有安装请走[带护栏的升级器](#安全升级推荐)，不要往正在运行的树上面直接装：它会在停服务
+**之前**就把有问题的版本拒掉，新树健康检查不过还会自动回滚。
 
 ### 关于版本固定
 
@@ -379,9 +419,11 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 ## 验证与说明
 
-**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 至 18）：
+**已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 → 2026-10-18）：
 
-- dsh `0.1.5-rc.1`、`0.1.6-alpha.1`、`0.1.6-alpha.2` 三版都装得上、补得齐、跑得通（升到 alpha.2 后逐项复验）；
+- dsh `0.1.5-rc.1` 到 `0.2.1-rc.2` 各版都装得上、补得齐、跑得通；本文档当前针对 `0.2.0-rc.2` 与 `0.2.1-rc.2`；
+- `0.2.1-rc.2` 在本机：200 个插件条目、0 失败 0 挂起，右侧边栏终端能开，`startup-prompt` 段确实进了初始系统提示词；
+- 升级护栏在沙箱里逐个跑过：演练失败的版本被拒且**正在跑的服务完全没停**、换树后健康检查失败自动回滚、连续两次启动失败自动恢复上一版、换树前启动的老进程能被识别并替换；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
 - 插件安装：`dshmarket` 从 npm 装入 profile，补丁自动链进安装目录，加载器可解析；

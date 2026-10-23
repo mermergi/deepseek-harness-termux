@@ -17,9 +17,12 @@ Most of the patches are Android platform gaps; patch 9 is a performance tweak; p
 - [Native Android app](#native-android-app-optional)
 - [PhoneUse plugin (optional)](#phoneuse-plugin-optional)
 - [Security notice (read this)](#security-notice-read-this)
+- [Repository layout](#repository-layout)
 - [Patch list](#patch-list)
+- [Default prompt for new sessions](#default-prompt-for-new-sessions)
 - [Installing plugins](#installing-plugins)
 - [Restarting](#restarting)
+- [Safe upgrade (recommended)](#safe-upgrade-recommended)
 - [After reinstalling or upgrading](#after-reinstalling-or-upgrading)
 - [Verification and notes](#verification-and-notes)
 
@@ -51,7 +54,7 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Node.js | `^22.19.0 \|\| >=24.0.0` (dsh's `engines` requirement; verified on v26.4.0) |
 | Build toolchain | `clang` + `make` + `python` (node-pty ships no Android prebuild, so node-gyp has to compile it on device) |
 | Search tool | `ripgrep` (`pkg install ripgrep`): `@vscode/ripgrep` has no Android build, see patch 6; with no `rg` on `PATH` the `glob`/`grep` tools are unavailable |
-| Disk | roughly 300 MB (dsh pulls in 515 npm packages) |
+| Disk | roughly 320 MB (dsh pulls in about 600 npm packages; `0.2.1-rc.2` measured 608) |
 | Network | access to the npm registry and to the model API of your choice (DeepSeek official, or a compatible gateway) |
 
 ## Quick start
@@ -70,7 +73,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | also install the Termux dependencies with `pkg install` (nodejs python clang make) |
 | `--dir ~/foo` | install somewhere else (the path is written into the launcher's `DSH_DIR`) |
-| `--version 0.1.5-rc.1` | pin the dsh version, for reproducibility |
+| `--version 0.2.1-rc.2` | pin the dsh version, for reproducibility |
 
 ### Option B: manual, step by step
 
@@ -87,16 +90,17 @@ node -v   # needs >= 24 (or 22.19+)
 
 ```sh
 mkdir -p ~/dsh && cd ~/dsh
-npm install @deepseek-ai/dsh
+npm install --ignore-scripts @deepseek-ai/dsh
 npm install @img/sharp-wasm32 sharp
 ```
 
-Two things matter here:
+Three things matter here:
 
 - **Do not use `npx`.** `npx` unpacks the package into a temporary directory, so the patches have no stable place to land. Install into a fixed directory such as `~/dsh`.
 - **`@img/sharp-wasm32` is not optional.** `sharp` ships no android-arm64 prebuild, and without it the attachment plugin crashes dsh **during startup**.
+- **`--ignore-scripts` is required on the dsh install.** `koffi`, a dependency of dsh, runs a CMake build in its postinstall; that fails on Termux and npm then abandons the whole install. Nothing on this host loads the koffi binding — the working tree carries no koffi binaries either.
 
-> To reproduce the versions verified in this document: `0.1.5-rc.1` (the `latest` at the time of writing) or `0.1.6-alpha.1` (the `alpha` tag, which only installs when the version is pinned explicitly).
+> To reproduce the release verified in this document: `0.2.1-rc.2` (the `next` tag; `latest` still points at `0.2.0-rc.2`). See [Which version to install](#which-version-to-install).
 
 #### 3. Apply the patches
 
@@ -157,7 +161,7 @@ bash android-app/install.sh                    # the Termux half (bridge scripts
 termux-open android-app/prebuilt/dsh.apk       # install the committed APK; no build toolchain needed
 ```
 
-The APK is only the client (75 KB) — dsh itself lives in Termux (~271 MB), so a fresh phone sets
+The APK is only the client (87 KB) — dsh itself lives in Termux (~313 MB), so a fresh phone sets
 up the Termux side first. See [android-app/README.md](android-app/README.md#installing-on-a-fresh-phone).
 
 - **Home-screen icon, full screen, no address bar**: a WebView shell; Back navigates the page
@@ -171,6 +175,16 @@ up the Termux side first. See [android-app/README.md](android-app/README.md#inst
   the last `turn/start` / `turn/end` in the session log, so waiting on the model and long silent tool
   calls are both classified correctly. Dragging the bubble to a screen edge snaps it into a slim
   half-ellipse handle whose fill colour carries the state.
+- **It keeps the server reachable**: a foreground `specialUse` keep-alive service probes
+  `http://127.0.0.1:3080/` every 10 s and dispatches the bridge when the port stops answering. That is
+  the fix for two Android behaviours: the cached-app freezer (a frozen Termux keeps its socket but
+  answers nothing) and the force-stop that clearing the recent-tasks card performs. Its notification
+  carries a stop action. The probe runs on a worker thread — on the main looper
+  `HttpURLConnection` throws `NetworkOnMainThreadException` and the error is swallowed, which made
+  the first build claim "backend offline" forever.
+- **New-session controls in the app**: the General settings page carries the session-initialization
+  prompt editor (`$DSH_HOME/AGENTS.md`), the default-preset picker and the restart button (patch 24).
+  The prompt is an ordinary file, so the same text is editable from Termux.
 - **Shared logs**: everything lives in `~/.dsh-app/`. `start_dsh.sh` no longer logs to `$TMPDIR` —
   Termux wipes `$PREFIX/tmp`, while a running dsh keeps writing to the deleted inode, so the token
   would vanish into thin air. See [android-app/README.md](android-app/README.md) for the full
@@ -211,9 +225,23 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 **To take it back**: delete that `export` line (or change it to `read-only` / `workspace-write`). The cost is that shell and terminal tools become unavailable again, leaving file read/write, search and web access.
 
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| [`android-fix.mjs`](android-fix.mjs) | the 24 idempotent compatibility patches; every launcher runs it first |
+| [`install.sh`](install.sh) | one-command install: dependencies → dsh → patches → launcher |
+| [`start_dsh.sh`](start_dsh.sh), [`start_dsh-terminal.sh`](start_dsh-terminal.sh) | Termux:Widget launcher (silent) and its visible-terminal twin |
+| [`app-scripts/`](app-scripts/README.md) | what the Android app drives, plus the guarded upgrader (`upgrade.mjs`) and its two guards |
+| [`android-app/`](android-app/README.md) | the self-built WebView shell APK and its Termux-side bridge |
+| [`startup-prompt/`](startup-prompt/) | optional bundle: registers `$DSH_HOME/AGENTS.md` as a system-prompt section |
+| [`phone-use/`](phone-use/README.md), [`phone-use-preset/`](phone-use-preset/README.md) | optional phone-control tools and the preset bundle that ships them |
+| [`env-probe.sh`](env-probe.sh), [`probes/`](probes/) | environment probes written as hypothesis → experiment → control |
+| [`shizuku-up.sh`](shizuku-up.sh) | restores the wireless-ADB / Shizuku channel after a reboot |
+
 ## Patch list
 
-23 in total; the numbers match the comments in `android-fix.mjs`.
+24 in total; the numbers match the comments in `android-fix.mjs`.
 
 **Android platform gaps** (1–8):
 
@@ -241,7 +269,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
 | 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
 
-**UI, plugins and toolchain** (12–23):
+**UI, plugins and toolchain** (12–24):
 
 | # | Symptom | Fix |
 |---|---|---|
@@ -262,6 +290,18 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
 **Patches 10 and 11 are worth remembering separately**: they are what `0.1.6-alpha.2` introduced relative to `alpha.1`, and without them nothing boots at all. The root cause of 10 is upstream wiring a **platform-specific native dependency** into the boot path every platform takes, for a package that has never shipped an `android-arm64` build. Patch 15 is patch 10's side effect: `link` mode also turns off the profile-plugin resolution route.
+
+## Default prompt for new sessions
+
+The General settings page (patch 24) edits `$DSH_HOME/AGENTS.md` — the agent loader's *user-global*
+instruction file — and picks the default preset. Both decide how a new session starts, and neither
+needs Termux any more.
+
+`$DSH_HOME/AGENTS.md` normally reaches the model as a per-turn `<system-reminder>`, which is what
+makes a mid-session edit take effect. If you want it inside the **initial system prompt** instead —
+before the first user message, with system-role weight — install the optional
+[`startup-prompt/`](startup-prompt/) bundle. The two paths coexist by design; its README explains how
+to keep only one.
 
 ## Installing plugins
 
@@ -316,19 +356,26 @@ node ~/dsh/android-fix.mjs
 
 When you launch through this repository's `start_dsh.sh`, that step happens automatically; the app bridge does it too (it re-runs the script before every server start).
 
+That re-run only re-applies patches. A **version** change should go through the [guarded upgrader](#safe-upgrade-recommended): it replaces the tree atomically instead of installing on top of a live one.
+
 ### Which version to install
 
-**`0.1.6-alpha.2` is recommended** (the newest release verified to work here):
+**`0.2.1-rc.2` is recommended** — the release verified end to end here (2026-10):
 
 ```sh
 cd ~/dsh
-npm install @deepseek-ai/dsh@0.1.6-alpha.2
-node ~/dsh/android-fix.mjs     # required: without patches 10 and 11 it will not boot
+npm install --ignore-scripts \
+  @deepseek-ai/dsh@0.2.1-rc.2 @deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.2
+npm install @img/sharp-wasm32 sharp
+node ~/dsh/android-fix.mjs
 ```
 
-Note that npm's `latest` tag still points at `0.1.5-rc.2`, so name the version explicitly — a bare `npm install @deepseek-ai/dsh` will not get you this release.
+npm's `next` tag points at `0.2.1-rc.2`; `latest` still points at `0.2.0-rc.2`, which also works. A
+bare `npm install @deepseek-ai/dsh` gets you `latest`, not the verified release.
 
-`0.1.6-alpha.2` adds two **boot-blocking** problems over `alpha.1` (patches 10 and 11). Both are handled in `android-fix.mjs`; patch it and it runs. Verified on this device.
+Upgrading an existing install: use the [guarded upgrader](#safe-upgrade-recommended) instead of
+installing on top of a live tree. It rejects a regressed release before the running server is
+stopped, and rolls back by itself when the new tree fails its health check.
 
 ### On pinning versions
 
@@ -382,9 +429,11 @@ dsh is in developer preview and upgrades may bring breaking changes. If the scri
 
 ## Verification and notes
 
-**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 to 18):
+**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 → 2026-10-18):
 
-- dsh `0.1.5-rc.1`, `0.1.6-alpha.1` and `0.1.6-alpha.2` all install, patch and run (re-checked item by item after upgrading to alpha.2);
+- dsh `0.1.5-rc.1` through `0.2.1-rc.2` install, patch and run; `0.2.0-rc.2` and `0.2.1-rc.2` are the releases this document currently targets;
+- `0.2.1-rc.2` on this device: 200 plugin entries with none failed or stalled, the right-sidebar terminal opens, and the `startup-prompt` section lands in the initial system prompt;
+- the upgrade guards were exercised in a sandbox: a release that fails its rehearsal is rejected with the live server untouched, a failed post-swap health check rolls back to the previous tree, two bad boots trigger the automatic rollback, and a server started before a tree swap is detected and replaced;
 - the Web UI responds and is usable at `127.0.0.1:3080`;
 - one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations;
 - plugin install: `dshmarket` installed from npm into the profile, linked into the install tree by the patch, and resolvable by the loader;

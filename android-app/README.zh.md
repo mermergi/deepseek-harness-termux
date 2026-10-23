@@ -27,6 +27,8 @@ Android Studio、不需要联网下载 SDK。
 | 卡住时 | 切标签页/刷新 | 页面顶部下拉刷新（不依赖任何第三方库） |
 | 切到别的 App | 不知道还在不在跑 | 悬浮球显示 `工作中 / 空闲 / 服务已停止`；**点一下展开展示文字，双击回 App** |
 | 改完配置要重启 | 开 Termux 敲命令 | 设置 → 通用设置 → 底部「重启 DSH 服务」（二次确认） |
+| App 切后台后服务被冻结/杀掉 | 一直转圈，直到 WebView 放弃 | 前台常驻保活服务每 10 秒探测回环端口，不响应就调 bridge 拉起；通知里带「停止保活」 |
+| 新会话从哪段提示词开始 | 去 Termux 改文件 | 设置 → 通用设置：初始化提示词编辑器 + 默认预设选择（补丁 24） |
 
 悬浮球那块值得单独说，因为「怎么知道 agent 在不在工作」是这里唯一有难度的部分：
 详见 [悬浮球：怎么知道 agent「在不在工作」](#悬浮球怎么知道-agent在不在工作)。
@@ -376,7 +378,7 @@ bash ~/deepseek-harness-termux/android-app/tools/build.sh --install
 
 ### 在一台新手机上装
 
-**APK 只是客户端（75 KB），DSH 本体在 Termux 里（约 271 MB），所以新手机不能只装 APK。**
+**APK 只是客户端（87 KB），DSH 本体在 Termux 里（约 313 MB），所以新手机不能只装 APK。**
 完整顺序：
 
 ```sh
@@ -402,10 +404,10 @@ termux-open android-app/prebuilt/dsh.apk
 
 | | 体积 |
 |---|---|
-| dsh 本体 + node_modules | 271 MB |
+| dsh 本体 + node_modules | 313 MB |
 | Node.js | 49 MB |
 | clang + python（node-pty 要现场编译） | 208 MB |
-| **`prebuilt/dsh.apk`** | **75 KB** |
+| **`prebuilt/dsh.apk`** | **87 KB** |
 
 所以**不用**装 openjdk/d8/aapt2（237 MB）——只有想自己改代码重编时才需要：
 

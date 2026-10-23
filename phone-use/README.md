@@ -88,7 +88,9 @@ bash phone-use/install.sh
 
 ## 改代码
 
-`host.js` 是**唯一源头**：它同时也是一份能直接在 Cordis 动态插件里跑的函数体。`build.mjs` 只做一处机械替换（沙箱的 `harness.registerTool(ctx, harness.defineTool(…))` → 真插件的 `ctx.tools.register(defineTool(…))`），匹配数为 0 就拒绝生成 —— 源头形状变了会立刻暴露，而不是生成一个没有工具的插件。
+`host.js` 是**唯一源头**：它同时也是一份能直接在 Cordis 动态插件里跑的函数体。
+
+harness 的 shell seam 在 `0.2.0` 里从 `run(spec)` 改成了 `execute(spec)` → handle → `handle.result()`；`host.js` 两种形状都支持（旧 harness 走 `run`），所以不必把插件钉在某个 harness 版本上。`build.mjs` 只做一处机械替换（沙箱的 `harness.registerTool(ctx, harness.defineTool(…))` → 真插件的 `ctx.tools.register(defineTool(…))`），匹配数为 0 就拒绝生成 —— 源头形状变了会立刻暴露，而不是生成一个没有工具的插件。
 
 ```sh
 node phone-use/build.mjs --out phone-use-preset/plugin

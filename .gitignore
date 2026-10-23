@@ -26,6 +26,7 @@ qwen-image-app/
 qwen-image-chat/
 qwen-standalone/
 wssrv.pid
+msa-verify/
 
 # Scratch Kotlin from UI experiments. The shell app itself is plain Java, so a root-level
 # .kt file is never part of a build.

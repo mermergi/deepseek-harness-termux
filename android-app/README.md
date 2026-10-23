@@ -22,6 +22,8 @@ Android Studio, no SDK download.
 | Stuck page | Switch tabs / reload | Pull down at the top of the page to reload |
 | Switched to another app | No idea if it is still running | A floating bubble shows `working / idle / server stopped`; tap to expand it, double-tap to return |
 | Restarting after a config change | Open Termux and type a command | Settings → General → "Restart DSH service" at the bottom (with confirmation) |
+| Server frozen in the background | "connecting" until the WebView gives up | A foreground keep-alive service probes the loopback port and restarts the server through the bridge; its notification carries a stop action |
+| Prompt / preset for a new session | Edit files in Termux | Settings → General: the initialization-prompt editor and the default-preset picker (patch 24) |
 | Bubble in the way | — | Two shapes, decided only by whether it is docked: a slim 24x56dp hollow arc on the left or right edge (a `(` on the right, `)` on the left), or the pill when it is away from an edge. Colour is the state; "working" also breathes. Drag to dock or undock, tap toggles, double-tap returns |
 
 The bubble is the only part with real difficulty — deciding *whether the agent is working*,
@@ -61,7 +63,7 @@ bash android-app/tools/build.sh --install
 
 ## Installing on a fresh phone
 
-The APK is only the client (75 KB); dsh itself lives in Termux (~271 MB). A new phone therefore
+The APK is only the client (87 KB); dsh itself lives in Termux (~313 MB). A new phone therefore
 cannot get by with the APK alone:
 
 ```sh
