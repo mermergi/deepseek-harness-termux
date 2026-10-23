@@ -1944,6 +1944,191 @@ if (existsSync(subprocessLocal)) {
   problems.push(`terminal inspector: ${subprocessLocal} missing`)
 }
 
+// 25. A file path in the preview header can never be read in full on a touch screen.
+//
+// The header uses the primitives `PathLabel`, a one-line label that clips the path from
+// the left and fades the clipped part out; the complete path exists only in the `title`
+// attribute, which a touch screen has no way to reveal. A long absolute path therefore
+// only ever shows its tail ("...eepseek-har"), and there is no gesture for the rest.
+//
+// The label is rendered by the prebuilt client shell, so patching the primitives source
+// would not reach the browser. This plugin's own bundle is served from disk, so the two
+// call sites in the header get a local label that keeps the same DOM and props but
+// expands in place when tapped: the path wraps onto as many lines as it needs and the
+// header grows with it. Tapping again collapses it to the single line.
+const documentPreviewClientPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-sidebar-documentpreview', 'lib', 'client.js')
+const fullPathMarker = 'ANDROID_PATCH_FULL_PATH'
+if (existsSync(documentPreviewClientPath)) {
+  const source = readFileSync(documentPreviewClientPath, 'utf8')
+  if (source.includes(fullPathMarker)) {
+    // already patched
+  } else {
+    const cssAnchor = '\t\t\t"wrap": "dhJKeW_wrap"\n\t\t};'
+    const component = [
+      cssAnchor,
+      `\t\t// ${fullPathMarker}: a local path label that reveals the whole path on tap.`,
+      '\t\t// The header has a fixed height, so it is allowed to grow only while expanded.',
+      '\t\tfunction AndroidFullPathLabel({ path: displayPath, className, ...attributes }) {',
+      '\t\t\tconst [expanded, setExpanded] = (0, react.useState)(false);',
+      '\t\t\tconst { directory, name } = pathPartsOf(displayPath);',
+      '\t\t\t(0, react.useEffect)(() => {',
+      '\t\t\t\tsetExpanded(false);',
+      '\t\t\t}, [displayPath]);',
+      '\t\t\t(0, react.useEffect)(() => {',
+      '\t\t\t\tif (typeof document === "undefined") return;',
+      '\t\t\t\tif (document.querySelector(\'style[data-android-patch="full-path"]\') !== null) return;',
+      '\t\t\t\tconst tag = document.createElement("style");',
+      '\t\t\t\ttag.dataset.androidPatch = "full-path";',
+      '\t\t\t\ttag.textContent = `.${TextPreview_module_css_default.header}:has([data-android-full-path][data-full-path-expanded]){height:auto!important;min-height:38px;align-items:flex-start!important;padding-top:6px!important;padding-bottom:6px!important}`;',
+      '\t\t\t\tdocument.head.appendChild(tag);',
+      '\t\t\t}, []);',
+      '\t\t\tconst collapsedStyle = {',
+      '\t\t\t\tflex: "1 1 auto",',
+      '\t\t\t\tminWidth: 0,',
+      '\t\t\t\toverflow: "hidden",',
+      '\t\t\t\twhiteSpace: "nowrap",',
+      '\t\t\t\ttextOverflow: "ellipsis",',
+      '\t\t\t\tfontSize: 12,',
+      '\t\t\t\tcursor: "pointer"',
+      '\t\t\t};',
+      '\t\t\tconst expandedStyle = {',
+      '\t\t\t\tflex: "1 1 auto",',
+      '\t\t\t\tminWidth: 0,',
+      '\t\t\t\toverflow: "visible",',
+      '\t\t\t\twhiteSpace: "normal",',
+      '\t\t\t\toverflowWrap: "anywhere",',
+      '\t\t\t\tfontSize: 12,',
+      '\t\t\t\tcursor: "pointer",',
+      '\t\t\t\ttextAlign: "left"',
+      '\t\t\t};',
+      '\t\t\treturn (0, react_jsx_runtime.jsx)("span", {',
+      '\t\t\t\t...attributes,',
+      '\t\t\t\tclassName,',
+      '\t\t\t\ttitle: displayPath,',
+      '\t\t\t\t"data-path-label": true,',
+      '\t\t\t\t"data-android-full-path": true,',
+      '\t\t\t\t"data-full-path-expanded": expanded ? "" : void 0,',
+      '\t\t\t\tstyle: expanded ? expandedStyle : collapsedStyle,',
+      '\t\t\t\tonClick: () => setExpanded((value) => !value),',
+      '\t\t\t\tchildren: (0, react_jsx_runtime.jsxs)("span", {',
+      '\t\t\t\t\tchildren: [directory !== "" && (0, react_jsx_runtime.jsx)("span", {',
+      '\t\t\t\t\t\tstyle: {',
+      '\t\t\t\t\t\t\tcolor: "var(--dsw-alias-label-tertiary)"',
+      '\t\t\t\t\t\t},',
+      '\t\t\t\t\t\tchildren: directory',
+      '\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {',
+      '\t\t\t\t\t\tchildren: name',
+      '\t\t\t\t\t})]',
+      '\t\t\t\t})',
+      '\t\t\t});',
+      '\t\t}',
+    ].join('\n')
+
+    const callSite = '(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.PathLabel, {'
+    const callCount = source.split(callSite).length - 1
+    if (!source.includes(cssAnchor) || callCount < 2) {
+      problems.push(`full path: anchors missing in ${documentPreviewClientPath} (call sites: ${callCount})`)
+    } else {
+      const patched = source
+        .replace(cssAnchor, component)
+        .replaceAll(callSite, '(0, react_jsx_runtime.jsx)(AndroidFullPathLabel, {')
+      writeFileSync(documentPreviewClientPath, patched)
+      console.log(`file preview: tapping the path reveals the full path (${callCount} call sites)`)
+    }
+  }
+} else {
+  problems.push(`full path: ${documentPreviewClientPath} missing`)
+}
+
+// 26. "Show file location" cannot work on Android, and fails as a dead button.
+//
+// The control appears whenever no application is registered for the file type, which is
+// always the case here: `nativeFileManager()` knows finder/explorer/directory and answers
+// null for android, so the Host refuses the reveal, the page reports "无法显示文件位置，
+// 请重试" and the user is left with a button that can only fail.
+//
+// Android has no OS file manager to reveal a path in — but the phone the WebView runs on
+// can hold the path, and "copy the absolute path" is the gesture a phone user wants from
+// that button anyway ("where is this file? give me the path"). So on Android the same
+// control copies the full path through the primitives clipboard helper and confirms with
+// a toast; the label and icon change to say what it does. The menu entry that opens the
+// file in a native application is untouched.
+const openInAppClientPath = join(nodeModules, '@deepseek-ai', 'dsh-client-ui-open-in-app', 'lib', 'client.js')
+const revealCopyMarker = 'ANDROID_PATCH_REVEAL_COPY'
+if (existsSync(openInAppClientPath)) {
+  const source = readFileSync(openInAppClientPath, 'utf8')
+  if (source.includes(revealCopyMarker)) {
+    // already patched
+  } else {
+    const edits = [
+      [
+        '\t\tlet _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");',
+        [
+          '\t\tlet _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");',
+          `\t\t// ${revealCopyMarker}: Android has no file-manager reveal, so the same gesture copies`,
+          '\t\t// the absolute path, which the WebView can do itself. The label and icon follow.',
+          '\t\tconst ANDROID_REVEAL_COPY = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);',
+        ].join('\n'),
+      ],
+      [
+        '\t\t\tasync openPath(path, action, application) {\n\t\t\t\tconst request = action === "reveal" ? {',
+        [
+          '\t\t\tasync openPath(path, action, application) {',
+          `\t\t\t\t// ${revealCopyMarker}: no Host round trip when there is nothing to reveal.`,
+          '\t\t\t\tif (ANDROID_REVEAL_COPY && action === "reveal") {',
+          '\t\t\t\t\tconst copied = await _deepseek_ai_dsh_client_ui_primitives.writeClipboard(path);',
+          '\t\t\t\t\treturn copied ? null : "revealError";',
+          '\t\t\t\t}',
+          '\t\t\t\tconst request = action === "reveal" ? {',
+        ].join('\n'),
+      ],
+      [
+        '\t\t\t\t\texecute(operation).then((failure) => {\n\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));\n\t\t\t\t\t}).finally(() => {',
+        [
+          '\t\t\t\t\texecute(operation).then((failure) => {',
+          '\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));',
+          `\t\t\t\t\t\t// ${revealCopyMarker}: a copy that worked deserves the same feedback as a failure.`,
+          '\t\t\t\t\t\telse if (ANDROID_REVEAL_COPY && operation.kind === "reveal") show(t("path.copied"));',
+          '\t\t\t\t\t}).finally(() => {',
+        ].join('\n'),
+      ],
+      [
+        '\t\t\t"path.reveal": "显示文件位置",',
+        [
+          `\t\t\t"path.reveal": ANDROID_REVEAL_COPY ? "复制完整路径" : "显示文件位置", // ${revealCopyMarker}`,
+          '\t\t\t"path.copied": "已复制完整路径",',
+        ].join('\n'),
+      ],
+      [
+        '\t\t\t"path.reveal": "Show file location",',
+        [
+          `\t\t\t"path.reveal": ANDROID_REVEAL_COPY ? "Copy full path" : "Show file location", // ${revealCopyMarker}`,
+          '\t\t\t"path.copied": "Full path copied",',
+        ].join('\n'),
+      ],
+      [
+        '\t\t\t}) : revealDefault ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, { size: props.prominent ? 18 : 13 }) : (0, react_jsx_runtime.jsx)(ApplicationIcon, {',
+        '\t\t\t}) : revealDefault ? (0, react_jsx_runtime.jsx)(ANDROID_REVEAL_COPY ? _deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular : _deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, { size: props.prominent ? 18 : 13 }) : (0, react_jsx_runtime.jsx)(ApplicationIcon, {',
+      ],
+      [
+        '\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, {}),',
+        '\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(ANDROID_REVEAL_COPY ? _deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular : _deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, {}),',
+      ],
+    ]
+    const missing = edits.filter(([anchor]) => !source.includes(anchor))
+    if (missing.length > 0) {
+      problems.push(`reveal copy: ${missing.length} anchor(s) missing in ${openInAppClientPath}`)
+    } else {
+      let patched = source
+      for (const [anchor, replacement] of edits) patched = patched.replace(anchor, replacement)
+      writeFileSync(openInAppClientPath, patched)
+      console.log('open in app: Android copies the full path instead of a reveal that cannot work')
+    }
+  }
+} else {
+  problems.push(`reveal copy: ${openInAppClientPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)
