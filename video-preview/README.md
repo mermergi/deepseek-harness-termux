@@ -24,6 +24,12 @@ app" control uses, i.e. `termux-open` on this device).
 
 ## How a file gets played
 
+The absolute path comes from the document resource metadata
+(`useResource(resourceAddress).value.absolutePath`), never from the resource address alone: an
+address built by the workspace-path helpers drops the workspace-root prefix, so guessing a
+leading `/` requests `/FatFishHome/...` instead of `/data/data/com.termux/files/home/FatFishHome/...`
+and the file route answers 404.
+
 The body never hands a URL straight to `<video>`. On every open it first probes the file
 with a ranged `fetch` (`Range: bytes=0-1023`, `credentials: same-origin`) — the same
 authenticated path the app already uses for RPC — and then:

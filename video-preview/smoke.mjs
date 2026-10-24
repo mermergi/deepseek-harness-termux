@@ -114,16 +114,18 @@ if (definition.loading !== 'renderer') throw new Error(`expected renderer loadin
 console.log('registration shape OK')
 
 // ---------- pure helpers ----------
-const cases = [
-  ['dsh-resource://file/session/s1/data/data/com.termux/files/home/a%20b.mp4', '/data/data/com.termux/files/home/a b.mp4'],
-  ['dsh-resource://file/absolute/data/x.mp4', '/data/x.mp4'],
-  ['nope', undefined],
-]
-for (const [address, expected] of cases) {
-  const actual = helpers.pathOfAddress(address)
-  if (actual !== expected) throw new Error(`pathOfAddress(${address}) = ${actual}, expected ${expected}`)
+// An absolute path inside a session address arrives with a doubled separator.
+if (helpers.parseFileAddress('dsh-resource://file/session/s1//data/data/com.termux/files/home/a%20b.mp4').path !== '/data/data/com.termux/files/home/a b.mp4') {
+  throw new Error('absolute session address failed')
 }
-console.log('pathOfAddress OK')
+// A workspace-relative address must not be mistaken for an absolute one (the 404 bug).
+const relative = helpers.parseFileAddress('dsh-resource://file/session/s1/FatFishHome/bili-studio/out/video.mp4')
+if (relative.absolute !== false || relative.path !== 'FatFishHome/bili-studio/out/video.mp4') throw new Error('relative session address failed')
+if (helpers.resolveMediaPath('dsh-resource://file/session/s1/FatFishHome/x.mp4', undefined) !== undefined) throw new Error('relative address resolved without metadata')
+if (helpers.resolveMediaPath('dsh-resource://file/session/s1/FatFishHome/x.mp4', '/data/data/com.termux/files/home/FatFishHome/x.mp4') !== '/data/data/com.termux/files/home/FatFishHome/x.mp4') throw new Error('metadata path not preferred')
+if (helpers.resolveMediaPath('dsh-resource://file/session/s1//data/x.mp4', undefined) !== '/data/x.mp4') throw new Error('absolute address fallback failed')
+if (helpers.parseFileAddress('nope') !== undefined) throw new Error('bad address parsed')
+console.log('address resolution OK')
 const url = helpers.mediaUrl('/data/data/com.termux/files/home/x.mp4')
 if (url !== 'http://127.0.0.1:3080/api/file?path=%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome%2Fx.mp4') throw new Error(`mediaUrl = ${url}`)
 console.log('mediaUrl OK')
@@ -161,10 +163,19 @@ function render(node) {
   return `<${String(type)}${attributes.length ? ` ${attributes.join(' ')}` : ''}>${render(props.children)}</${String(type)}>`
 }
 const slotProps = slots[0].options.inject('session-1', {})
+const useResource = (address) => ({
+  status: 'ready',
+  value: {
+    absolutePath: String(address).endsWith('movie%20clip.mp4')
+      ? '/data/data/com.termux/files/home/movie clip.mp4'
+      : address,
+  },
+})
 const initial = render(jsxRuntimeStub.jsx(slots[0].component, {
-  resourceAddress: 'dsh-resource://file/session/session-1/data/data/com.termux/files/home/movie%20clip.mp4',
+  resourceAddress: 'dsh-resource://file/session/session-1/FatFishHome/movie%20clip.mp4',
   content: {},
   t,
+  useResource,
   ...slotProps,
 }))
 console.log('initial render bytes:', initial.length)
@@ -174,12 +185,78 @@ console.log('  has probing marker:', initial.includes('data-media-preview="probi
 if (!initial.includes('t:loading')) throw new Error('loading state missing')
 if (initial.includes('<video')) throw new Error('video element rendered before the probe resolves')
 
-const bad = render(jsxRuntimeStub.jsx(slots[0].component, {
-  resourceAddress: 'not-an-address',
+const unresolvable = render(jsxRuntimeStub.jsx(slots[0].component, {
+  resourceAddress: 'dsh-resource://file/session/session-1/FatFishHome/x.mp4',
   content: {},
   t,
+  useResource: () => ({ status: 'ready', value: {} }),
   ...slotProps,
 }))
-console.log('bad address renders message:', bad.includes('t:badAddress'))
-if (!bad.includes('t:badAddress')) throw new Error('bad address message missing')
+console.log('relative address without metadata waits:', unresolvable.includes('t:resolving'))
+if (!unresolvable.includes('t:resolving')) throw new Error('waiting state missing')
+
+// ---------- effect harness: probe -> blob -> player ----------
+const setterLog = []
+const cleanupCleanups = []
+let stateSlot = 0
+let pendingEffects = []
+const harnessInitials = ["probing", undefined, 0, "", "", "", 0, 0]
+const harnessReact = {
+  useState() {
+    const index = stateSlot
+    stateSlot += 1
+    const setter = (value) => setterLog.push([index, typeof value === "function" ? value(harnessInitials[index]) : value])
+    return [harnessInitials[index], setter]
+  },
+  useMemo(factory) {
+    return factory()
+  },
+  useCallback(fn) {
+    return fn
+  },
+  useEffect(fn) {
+    pendingEffects.push(fn)
+  },
+  createElement(type, props, ...children) {
+    return { type, props: { ...(props ?? {}), children: children.length > 1 ? children : children[0] } }
+  },
+  Fragment: Symbol("Fragment"),
+}
+const harnessRegistration = registration.factory((specifier) => {
+  if (specifier === "react") return harnessReact
+  if (specifier === "react/jsx-runtime") return jsxRuntimeStub === undefined ? undefined : { jsx: jsxRuntimeStub.jsx, jsxs: jsxRuntimeStub.jsxs, Fragment }
+  throw new Error(`unexpected require: ${specifier}`)
+})
+const harnessHelpers = harnessRegistration.__test
+globalThis.fetch = async (url, options) => {
+  if (options !== undefined && options.headers !== undefined && options.headers.Range !== undefined) {
+    return { status: 206, ok: true, headers: { get: (name) => (name === "content-range" ? "bytes 0-1023/1721428" : null) } }
+  }
+  return { status: 200, ok: true, headers: { get: (name) => (name === "content-length" ? "1721428" : null) }, blob: async () => ({ size: 1721428, type: "video/mp4" }) }
+}
+const originalCreate = globalThis.URL.createObjectURL
+globalThis.URL.createObjectURL = () => "blob:mock-media"
+stateSlot = 0
+pendingEffects = []
+const harnessProps = {
+  resourceAddress: "dsh-resource://file/session/session-1/FatFishHome/movie%20clip.mp4",
+  content: {},
+  t,
+  useResource: () => ({ status: "ready", value: { absolutePath: "/data/data/com.termux/files/home/FatFishHome/movie clip.mp4" } }),
+  ...slotProps,
+}
+const tree = render(jsxRuntimeStub.jsx(harnessHelpers.MediaBody, harnessProps))
+for (const effect of pendingEffects) {
+  const cleanup = effect()
+  if (typeof cleanup === "function") cleanupCleanups.push(cleanup)
+}
+await new Promise((resolve) => setTimeout(resolve, 25))
+globalThis.URL.createObjectURL = originalCreate
+const calls = (index) => setterLog.filter(([slot]) => slot === index).map(([, value]) => value)
+console.log("effect harness setter calls:", JSON.stringify(setterLog.map(([slot, value]) => [slot, typeof value === "string" && value.startsWith("blob:") ? value : value])))
+if (!calls(2).includes(1721428)) throw new Error(`size setter missing: ${JSON.stringify(calls(2))}`)
+if (!calls(1).includes("blob:mock-media")) throw new Error(`blob src missing: ${JSON.stringify(calls(1))}`)
+if (!calls(0).includes("loading")) throw new Error(`phase loading missing: ${JSON.stringify(calls(0))}`)
+console.log("probe -> blob -> player flow OK")
+
 console.log('OK')

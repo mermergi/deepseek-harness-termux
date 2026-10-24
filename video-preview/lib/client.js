@@ -47,6 +47,8 @@ window.__ModuleLoader__.load({
 			loading: "正在加载媒体…",
 			waking: "服务暂时没响应，正在唤醒（Android 冻结了 Termux，几秒后会恢复）…",
 			badAddress: "无法解析这个文件的地址",
+			resolving: "正在解析文件路径…",
+			pathUnknown: "拿不到这个文件的绝对路径（会话资源没有返回它）。刷新一下标签页再试。",
 			unsupported: "这个媒体文件没法在这里播放：WebView 的解码器不支持它的容器或编码，或者文件已损坏。",
 			unreachable: "取不到这个文件（{error}）。这不一定是文件本身的问题——服务没响应时也会这样。",
 			retry: "重试",
@@ -65,6 +67,8 @@ window.__ModuleLoader__.load({
 			loading: "Loading media…",
 			waking: "The service is not answering; waking it (Android froze Termux, it recovers in seconds)…",
 			badAddress: "Could not resolve this file address",
+			resolving: "Resolving the file path…",
+			pathUnknown: "The absolute path for this file is unavailable (the session resource did not report it). Reload the tab and try again.",
 			unsupported: "This media file cannot play here: the WebView's decoders do not support its container or codec, or the file is broken.",
 			unreachable: "Could not read this file ({error}). That is not necessarily the file — it also happens when the service is not answering.",
 			retry: "Retry",
@@ -80,18 +84,24 @@ window.__ModuleLoader__.load({
 		};
 
 		/**
-		 * Decode a `dsh-resource://file/...` address into an absolute host path.
+		 * Split a `dsh-resource://file/...` address into scope, path and absoluteness.
+		 *
+		 * Addresses built by the workspace-path helpers drop the workspace-root prefix, so a
+		 * file under the workspace arrives here **relative** (e.g.
+		 * `FatFishHome/bili-studio/out/x.mp4`). Reading that as absolute produced
+		 * `/FatFishHome/...`, which /api/file answers with 404 — so the caller must combine
+		 * this with the resource metadata's absolutePath before using it.
 		 * @param address - the document slot's resource address.
-		 * @returns the absolute path, or undefined for an unknown address shape.
+		 * @returns the decoded path and whether the address carries it absolutely.
 		 */
-		function pathOfAddress(address) {
+		function parseFileAddress(address) {
 			if (typeof address !== "string") return void 0;
 			const prefix = "dsh-resource://file/";
 			if (!address.startsWith(prefix)) return void 0;
 			const parts = address.slice(prefix.length).split("/");
 			const scope = parts.shift();
+			if (scope !== "session" && scope !== "absolute") return void 0;
 			if (scope === "session") parts.shift();
-			else if (scope !== "absolute") return void 0;
 			const path = parts
 				.map((segment) => {
 					try {
@@ -102,7 +112,22 @@ window.__ModuleLoader__.load({
 				})
 				.join("/");
 			if (path === "") return void 0;
-			return path.startsWith("/") || /^[A-Za-z]:/.test(path) ? path : `/${path}`;
+			const absolute = path.startsWith("/") || /^[A-Za-z]:/.test(path);
+			return { scope, path, absolute };
+		}
+
+		/**
+		 * Absolute host path for a document: the resource metadata owns the answer, and the
+		 * address is only trusted when it carries an absolute path itself.
+		 * @param address - the document slot's resource address.
+		 * @param absolutePath - `useResource(address).value.absolutePath`, when the owner reports it.
+		 * @returns the absolute path, or undefined while it is still unknown.
+		 */
+		function resolveMediaPath(address, absolutePath) {
+			if (typeof absolutePath === "string" && absolutePath !== "") return absolutePath;
+			const parsed = parseFileAddress(address);
+			if (parsed === void 0) return void 0;
+			return parsed.absolute ? parsed.path : void 0;
 		}
 
 		/**
@@ -228,7 +253,12 @@ window.__ModuleLoader__.load({
 		 */
 		function MediaBody(props) {
 			const { content, resourceAddress, t } = props;
-			const path = (0, react.useMemo)(() => pathOfAddress(resourceAddress), [resourceAddress]);
+			// The owner reports the file's absolute path through the standard resource hook; the
+			// address alone may hold a workspace-relative path. Never guess "/" + address.
+			const resource = typeof props.useResource === "function" ? props.useResource(resourceAddress) : void 0;
+			const absolutePath = resource !== void 0 && resource.value !== void 0 ? resource.value.absolutePath : void 0;
+			const address = (0, react.useMemo)(() => parseFileAddress(resourceAddress), [resourceAddress]);
+			const path = (0, react.useMemo)(() => resolveMediaPath(resourceAddress, absolutePath), [resourceAddress, absolutePath]);
 			const url = (0, react.useMemo)(() => (path === void 0 ? void 0 : mediaUrl(path)), [path]);
 			const [phase, setPhase] = (0, react.useState)("probing");
 			const [src, setSrc] = (0, react.useState)();
@@ -238,6 +268,20 @@ window.__ModuleLoader__.load({
 			const [hint, setHint] = (0, react.useState)("");
 			const [attempt, setAttempt] = (0, react.useState)(0);
 			const [playerFailures, setPlayerFailures] = (0, react.useState)(0);
+
+			(0, react.useEffect)(() => {
+				console.info("[video-preview] path", JSON.stringify({ address: resourceAddress, absolutePath, parsed: address, resolved: path }));
+			}, [resourceAddress, absolutePath, address, path]);
+
+			(0, react.useEffect)(() => {
+				if (path !== void 0) return;
+				const timer = setTimeout(() => {
+					setPhase("error");
+					setErrorKind("path");
+					setNotice(t("pathUnknown"));
+				}, 12000);
+				return () => clearTimeout(timer);
+			}, [path]);
 
 			(0, react.useEffect)(() => {
 				if (url === void 0) return;
@@ -347,10 +391,11 @@ window.__ModuleLoader__.load({
 				if (!opened) setHint(t("openFailed"));
 			}, [path, props.openExternally, t]);
 
-			if (url === void 0 || path === void 0) {
+			if (path === void 0) {
 				return (0, react_jsx_runtime.jsx)("div", {
-					style: { padding: 16, fontSize: 13, lineHeight: 1.6 },
-					children: t("badAddress")
+					"data-media-preview": phase === "error" ? "error" : "resolving",
+					style: { padding: 16, fontSize: 13, lineHeight: 1.6, color: "var(--dsw-alias-label-secondary, inherit)" },
+					children: phase === "error" ? (notice !== "" ? notice : t("pathUnknown")) : t("resolving")
 				});
 			}
 
@@ -499,7 +544,8 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		// Pure helpers and the body for the offline smoke test; not part of the plugin contract.
 		exports.__test = {
-			pathOfAddress,
+			parseFileAddress,
+			resolveMediaPath,
 			mediaUrl,
 			totalFromHeaders,
 			extensionOf,
