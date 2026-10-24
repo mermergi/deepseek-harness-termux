@@ -2129,6 +2129,133 @@ if (existsSync(openInAppClientPath)) {
   problems.push(`reveal copy: ${openInAppClientPath} missing`)
 }
 
+// 27. The authenticated file route cannot stream, so a <video> cannot play.
+//
+// `/api/file` reads a whole file and answers 200 with `Content-Length`; it ignores the
+// `Range` header entirely and refuses anything above `maxImageBytes` (20 MB) with 413.
+// A media element starts with `Range: bytes=0-` and expects 206 + `Content-Range`, so
+// previewing an mp4 in the sidebar is impossible however the client is written — and a
+// phone recording is almost always over the limit.
+//
+// Give the route one bounded byte window per ranged GET (8 MB, so seeking issues a new
+// request instead of allocating the file), report `Accept-Ranges`, answer 416 when the
+// range cannot be satisfied, and stop applying the whole-file cap to HEAD (a media
+// element probes size through it). The plain non-ranged GET keeps its 20 MB cap.
+const sessionControllerPath = join(nodeModules, '@deepseek-ai', 'dsh-api-session-controller', 'lib', 'index.js')
+const rangeMarker = 'ANDROID_PATCH_RANGE'
+if (existsSync(sessionControllerPath)) {
+  const source = readFileSync(sessionControllerPath, 'utf8')
+  if (source.includes(rangeMarker)) {
+    // already patched
+  } else {
+    const helperAnchor = 'async function serveFile(request, fs, maxBytes) {'
+    const helpers = [
+      `/** ${rangeMarker}: bounded window per ranged GET, so media streams without loading the file. */`,
+      'const RANGE_CHUNK_BYTES = 8 * 1024 * 1024;',
+      `/** Parse one \`bytes=\` range; multi-range and malformed headers fall back to a full response. */
+function parseByteRange(value) {
+	if (typeof value !== "string") return void 0;
+	const match = /^bytes=(\\d*)-(\\d*)$/.exec(value.trim());
+	if (match === null) return void 0;
+	const [, startText, endText] = match;
+	if (startText === "" && endText === "") return void 0;
+	if (startText === "") return {
+		suffix: Number(endText)
+	};
+	return {
+		start: Number(startText),
+		end: endText === "" ? void 0 : Number(endText)
+	};
+}
+/** Resolve one parsed range against a known size, capped at one chunk. */
+function resolveByteRange(range, size) {
+	if (!Number.isSafeInteger(size) || size < 0) return void 0;
+	if (range.suffix !== void 0) {
+		if (!Number.isSafeInteger(range.suffix) || range.suffix <= 0) return void 0;
+		const offset = Math.max(0, size - range.suffix);
+		return {
+			offset,
+			length: Math.min(range.suffix, size)
+		};
+	}
+	const start = range.start;
+	if (!Number.isSafeInteger(start) || start < 0 || start >= size) return void 0;
+	const end = range.end === void 0 ? size - 1 : Math.min(range.end, size - 1);
+	if (!Number.isSafeInteger(end) || end < start) return void 0;
+	return {
+		offset: start,
+		length: Math.min(end - start + 1, RANGE_CHUNK_BYTES)
+	};
+}
+`,
+      helperAnchor,
+    ].join('')
+
+    const headersAnchor = '\t\tconst headers = {\n\t\t\t...BASE_HEADERS,\n\t\t\t"Content-Type": mediaType\n\t\t};'
+    const headersReplacement = [
+      '\t\tconst headers = {',
+      '\t\t\t...BASE_HEADERS,',
+      '\t\t\t"Content-Type": mediaType,',
+      `\t\t\t"Accept-Ranges": "bytes" // ${rangeMarker}`,
+      '\t\t};',
+    ].join('\n')
+
+    const headCapAnchor = '\t\t\tif (info.size !== void 0) {\n\t\t\t\tif (info.size > maxBytes) return fail(413, "file exceeds byte limit");\n\t\t\t\theaders["Content-Length"] = String(info.size);\n\t\t\t}'
+    const headCapReplacement = [
+      '\t\t\t// A media element learns the size through HEAD; the range branch below enforces',
+      '\t\t\t// the per-request bound, so the whole-file cap must not hide the size.',
+      '\t\t\tif (info.size !== void 0) headers["Content-Length"] = String(info.size);',
+    ].join('\n')
+
+    const bodyAnchor = '\t\tconst bytes = await fs.readBytes(target, request.signal, maxBytes);'
+    const rangeBranch = [
+      `\t\t// ${rangeMarker}: one bounded window, streamed as 206.`,
+      '\t\tconst range = parseByteRange(request.headers.get("range"));',
+      '\t\tif (range !== void 0) {',
+      '\t\t\tconst info = await fs.stat(target, request.signal);',
+      '\t\t\tif (info === void 0) return fail(404, "not found");',
+      '\t\t\tif (info.type !== "file") return fail(403, "not a regular file");',
+      '\t\t\tconst window = info.size === void 0 ? void 0 : resolveByteRange(range, info.size);',
+      '\t\t\tif (window === void 0) return new Response(null, {',
+      '\t\t\t\tstatus: 416,',
+      '\t\t\t\theaders: {',
+      '\t\t\t\t\t...BASE_HEADERS,',
+      `\t\t\t\t\t"Content-Range": \`bytes */\${info.size ?? 0}\``,
+      '\t\t\t\t}',
+      '\t\t\t});',
+      '\t\t\tconst bytes = await fs.readByteRange(target, window, request.signal);',
+      '\t\t\tconst first = window.offset;',
+      '\t\t\tconst last = window.offset + bytes.byteLength - 1;',
+      '\t\t\theaders["Content-Range"] = `bytes ${first}-${last}/${info.size}`;',
+      '\t\t\theaders["Content-Length"] = String(bytes.byteLength);',
+      '\t\t\treturn new Response(bytes.slice(), {',
+      '\t\t\t\tstatus: 206,',
+      '\t\t\t\theaders',
+      '\t\t\t});',
+      '\t\t}',
+      bodyAnchor,
+    ].join('\n')
+
+    const anchors = [helperAnchor, headersAnchor, headCapAnchor, bodyAnchor]
+    const missing = anchors.filter((anchor) => !source.includes(anchor))
+    if (missing.length > 0) {
+      problems.push(`file route range: ${missing.length} anchor(s) missing in ${sessionControllerPath}`)
+    } else {
+      writeFileSync(
+        sessionControllerPath,
+        source
+          .replace(helperAnchor, helpers)
+          .replace(headersAnchor, headersReplacement)
+          .replace(headCapAnchor, headCapReplacement)
+          .replace(bodyAnchor, rangeBranch),
+      )
+      console.log('file route: ranged reads stream media instead of failing at the whole-file cap')
+    }
+  }
+} else {
+  problems.push(`file route range: ${sessionControllerPath} missing`)
+}
+
 if (problems.length > 0) {
   console.error('unresolved:')
   for (const problem of problems) console.error(`  - ${problem}`)

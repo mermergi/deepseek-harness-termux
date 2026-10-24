@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 Compatibility patches plus a one-tap launcher that get [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) running on **Android / Termux**.
 
-dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **26 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
+dsh officially supports Linux, macOS and Windows. Android (Termux, bionic libc) is missing several prerequisites it assumes, so `npx @deepseek-ai/dsh web` from the official README **will not start** on a phone. This repository collects the **27 patches** that are verified to work on a real device into one idempotent script (`android-fix.mjs`), provides launch steps you can copy directly, and ships a **locally built Android shell app** — it starts the server, and adds a floating status bubble, a notification island, a file picker, and a restart button in the settings page.
 
-Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships; patches 18 and 19 come from `0.1.7-alpha.1` — the module farm `link` mode used to build and the runtime resolution interception that cannot load on Android; patch 20 keeps plugin metadata readable now that patch 19 leaves the internal module loader uninstalled; patch 21 recovers the writer locks a killed process leaves behind, which otherwise freeze every plugin install for good; patch 22 teaches the plugin market's own validator the list-valued bundle patch `0.1.7` introduced, without which the market rolls back every install it attempts; patch 23 maps Node's `android` platform onto the Linux process inspector, without which the right-sidebar terminal refuses to open at all; patch 24 adds the session-initialization prompt editor, the default-preset picker and the restart button to the General settings page, so a new session can start from the instructions you want without editing files over adb or a terminal; patch 25 makes a clipped file path expandable by tap (a touch screen cannot hover for the full path), and patch 26 turns "show file location" into "copy the full path" on Android, where no file manager exists to reveal into.
+Most of the patches are Android platform gaps; patch 9 is a performance tweak; patches 10–15 come from `0.1.6-alpha.2` and its new plugin page; patch 16 repairs the global `node-gyp`, which only matters for plugins that compile native code on the device; patch 17 repairs plugin bundles that reference an icon this dsh no longer ships; patches 18 and 19 come from `0.1.7-alpha.1` — the module farm `link` mode used to build and the runtime resolution interception that cannot load on Android; patch 20 keeps plugin metadata readable now that patch 19 leaves the internal module loader uninstalled; patch 21 recovers the writer locks a killed process leaves behind, which otherwise freeze every plugin install for good; patch 22 teaches the plugin market's own validator the list-valued bundle patch `0.1.7` introduced, without which the market rolls back every install it attempts; patch 23 maps Node's `android` platform onto the Linux process inspector, without which the right-sidebar terminal refuses to open at all; patch 24 adds the session-initialization prompt editor, the default-preset picker and the restart button to the General settings page, so a new session can start from the instructions you want without editing files over adb or a terminal; patch 25 makes a clipped file path expandable by tap (a touch screen cannot hover for the full path), patch 26 turns "show file location" into "copy the full path" on Android, where no file manager exists to reveal into, and patch 27 gives the authenticated file route byte ranges so a video can stream and seek in the sidebar instead of being copied out of Termux.
 
 ## Table of contents
 
@@ -20,6 +20,7 @@ Most of the patches are Android platform gaps; patch 9 is a performance tweak; p
 - [Repository layout](#repository-layout)
 - [Patch list](#patch-list)
 - [Default prompt for new sessions](#default-prompt-for-new-sessions)
+- [Media preview (video and audio)](#media-preview-video-and-audio)
 - [Installing plugins](#installing-plugins)
 - [Restarting](#restarting)
 - [Safe upgrade (recommended)](#safe-upgrade-recommended)
@@ -235,13 +236,14 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | [`app-scripts/`](app-scripts/README.md) | what the Android app drives, plus the guarded upgrader (`upgrade.mjs`) and its two guards |
 | [`android-app/`](android-app/README.md) | the self-built WebView shell APK and its Termux-side bridge |
 | [`startup-prompt/`](startup-prompt/) | optional bundle: registers `$DSH_HOME/AGENTS.md` as a system-prompt section |
+| [`video-preview/`](video-preview/README.md) | optional bundle: plays video and audio in the sidebar, streamed through ranged reads |
 | [`phone-use/`](phone-use/README.md), [`phone-use-preset/`](phone-use-preset/README.md) | optional phone-control tools and the preset bundle that ships them |
 | [`env-probe.sh`](env-probe.sh), [`probes/`](probes/) | environment probes written as hypothesis → experiment → control |
 | [`shizuku-up.sh`](shizuku-up.sh) | restores the wireless-ADB / Shizuku channel after a reboot |
 
 ## Patch list
 
-26 in total; the numbers match the comments in `android-fix.mjs`.
+27 in total; the numbers match the comments in `android-fix.mjs`.
 
 **Android platform gaps** (1–8):
 
@@ -269,7 +271,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 10 | Boot: `host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | restore `resolutionMode`'s default from `runtime` back to `link` in `profile-boot-<hash>.js` |
 | 11 | Boot: `--expose-internals is required for HMR service` | drop the hard-coded `dsh-hmr` entry from `dsh-base/cordis.patch.yml` |
 
-**UI, plugins and toolchain** (12–26):
+**UI, plugins and toolchain** (12–27):
 
 | # | Symptom | Fix |
 |---|---|---|
@@ -288,6 +290,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 24 | No way to set the prompt a new session starts from, or its default preset, without editing files | the General settings page gets the session-initialization prompt editor (reads and writes `$DSH_HOME/AGENTS.md` through the loopback status daemon on port 3098, because the app runs as a different UID and cannot touch Termux's home), the default-preset picker (`agent-preset-registry` through the ordinary settings RPC) and the restart button. The prompt is an ordinary file: the editor is a convenience, not a new storage format |
 | 25 | A long path in the file-preview header can never be read in full: it is clipped from the left with a fade, and the complete path lives only in the `title` attribute — a touch screen cannot hover | tap the path and it expands in place (the header grows, the path wraps); tap again to collapse. The label the shell uses is a prebuilt copy, so the patch replaces the two call sites in the document-preview plugin, whose bundle is served from disk |
 | 26 | "Show file location" can only fail: `无法显示文件位置，请重试` (could not show the file location) | Android has no file manager to reveal a path in — `nativeFileManager()` answers null for `android`, so the button is dead by construction. On Android the same control copies the absolute path through the clipboard helper and confirms with a toast; the label and icon change to "copy full path". Opening the file with a native application is untouched |
+| 27 | A video in the sidebar cannot play: `/api/file` reads the whole file, ignores `Range`, and refuses anything over 20 MB with `413`, so a media element gets `200`/`413` and gives up | honour one byte range per `GET` (`206` + `Content-Range` + `Accept-Ranges`, one bounded 8 MB window), answer `416` for a range that cannot be satisfied, and let `HEAD` report the size; the plain non-ranged `GET` keeps its 20 MB cap. The [`video-preview/`](video-preview/) bundle streams through this |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
@@ -304,6 +307,23 @@ makes a mid-session edit take effect. If you want it inside the **initial system
 before the first user message, with system-role weight — install the optional
 [`startup-prompt/`](startup-prompt/) bundle. The two paths coexist by design; its README explains how
 to keep only one.
+
+## Media preview (video and audio)
+
+The optional [`video-preview/`](video-preview/) bundle plays video and audio inside the
+sidebar preview. Files stay in Termux's private directory — nothing is exported and no
+external app is opened — because the body streams the file from the authenticated
+`/api/file` route through a `<video>`/`<audio>` element.
+
+That streaming needs byte ranges, which is what **patch 27** adds: one bounded 8 MB window
+per ranged `GET` (`206` with `Content-Range`), `416` for an unsatisfiable range, and a
+`HEAD` that reports the size instead of hiding it behind the 20 MB whole-file cap. Without
+the patch the route answers a whole-file `200` (or `413`) and Chromium gives up on the
+source.
+
+When the WebView's decoders cannot handle a container or codec (HEVC, many mkv/avi files),
+the panel says so and offers **copy path** and **open in external player** instead. Install
+and test notes: [`video-preview/README.md`](video-preview/README.md).
 
 ## Installing plugins
 

@@ -1,0 +1,13 @@
+# Media preview: registers a document preview for video and audio files.
+#
+# The host half is a no-op row: it exists so the Loader mounts the package, which is how
+# dsh-client-modules discovers the `dsh.client` half. All of the work happens in the
+# browser (lib/client.js), where it registers a renderer with the sidebar's
+# `documentPreviews` registry and a body component with the document slot.
+#
+# Requires android-fix.mjs patch 27 on Android: the /api/file route has to honour byte
+# ranges, otherwise a media element gets a 200 whole-file response (or a 413 over 20 MB)
+# and cannot stream or seek.
+- insert:
+    - id: video-preview
+      name: '@local/dsh-video-preview'

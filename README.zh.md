@@ -4,9 +4,9 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）在 **Android / Termux** 上跑起来的兼容补丁 + 一键启动脚本。
 
-dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **26 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
+dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺了几个它默认依赖的前提，所以官方 README 里的 `npx @deepseek-ai/dsh web` 在手机上**起不来**。本仓库把实测可行的 **27 处**修补收敛到一个幂等脚本（`android-fix.mjs`）里，给出了可直接复制的启动步骤，另外附带一个**本地自编译的 Android 外壳 App**——有启动服务、悬浮状态气泡、通知岛、文件选择器，以及设置页里的重启按钮。
 
-其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标；第 18、19 条是 `0.1.7-alpha.1` 带来的——它不再自己建 `link` 模式的模块农场，也把运行时解析拦截装进了启动必经路径，而那个拦截在安卓上加载不了；第 20 条让第 19 条留下的「内部模块加载器不可用」不再拖垮插件元信息；第 21 条回收被杀进程遗留的写锁——否则它会把之后**每一次**插件安装都冻住；第 22 条教插件市场自己的校验器认识 `0.1.7` 引入的**列表式** bundle patch，否则市场会把每一次安装都回滚掉；第 23 条把 Node 在 Termux 上报的 `android` 平台映射到 Linux 进程检查器，不补则右侧边栏的终端根本打不开；第 24 条给通用设置页加上「新会话初始化提示词」编辑器、默认预设选择和重启按钮，新会话从哪段指令开始不再需要改文件或敲命令；第 25 条让被裁掉的文件路径点一下就能展开看全（触屏没有 hover）；第 26 条在安卓上把「显示文件位置」换成「复制完整路径」——安卓根本没有可用的文件管理器去定位文件。
+其中大多数补丁是安卓平台差异；第 9 条是性能优化；第 10–15 条是 `0.1.6-alpha.2` 和它的新插件页带来的；第 16 条修的是全局 `node-gyp`，只有装需要现场编译的原生插件时才会用到；第 17 条修的是插件引用了此版 dsh 已不再提供的图标；第 18、19 条是 `0.1.7-alpha.1` 带来的——它不再自己建 `link` 模式的模块农场，也把运行时解析拦截装进了启动必经路径，而那个拦截在安卓上加载不了；第 20 条让第 19 条留下的「内部模块加载器不可用」不再拖垮插件元信息；第 21 条回收被杀进程遗留的写锁——否则它会把之后**每一次**插件安装都冻住；第 22 条教插件市场自己的校验器认识 `0.1.7` 引入的**列表式** bundle patch，否则市场会把每一次安装都回滚掉；第 23 条把 Node 在 Termux 上报的 `android` 平台映射到 Linux 进程检查器，不补则右侧边栏的终端根本打不开；第 24 条给通用设置页加上「新会话初始化提示词」编辑器、默认预设选择和重启按钮，新会话从哪段指令开始不再需要改文件或敲命令；第 25 条让被裁掉的文件路径点一下就能展开看全（触屏没有 hover）；第 26 条在安卓上把「显示文件位置」换成「复制完整路径」——安卓根本没有可用的文件管理器去定位文件；第 27 条给鉴权文件路由加上字节范围，视频才能在侧边栏里流式播放和拖动，而不用先从 Termux 私有目录拷出去。
 
 ## 目录
 
@@ -20,6 +20,7 @@ dsh 官方支持 Linux / macOS / Windows。安卓（Termux，bionic libc）缺�
 - [仓库结构](#仓库结构)
 - [补丁清单](#补丁清单)
 - [新会话的默认提示词](#新会话的默认提示词)
+- [视频 / 音频预览](#视频--音频预览)
 - [装插件](#装插件)
 - [重启](#重启)
 - [安全升级（推荐）](#安全升级推荐)
@@ -228,13 +229,14 @@ this host; refusing to run the command unconfined.
 | [`app-scripts/`](app-scripts/README.md) | App 驱动的那几个脚本，外加带护栏的升级器（`upgrade.mjs`）和它的两道保险 |
 | [`android-app/`](android-app/README.zh.md) | 本机自编译的 WebView 外壳 APK 与 Termux 侧 bridge |
 | [`startup-prompt/`](startup-prompt/) | 可选 bundle：把 `$DSH_HOME/AGENTS.md` 注册成 system-prompt 段 |
+| [`video-preview/`](video-preview/README.md) | 可选 bundle：在侧边栏直接播放视频/音频（靠字节范围流式读取） |
 | [`phone-use/`](phone-use/README.md)、[`phone-use-preset/`](phone-use-preset/README.md) | 可选的手机操作工具，以及承载它们的 preset bundle |
 | [`env-probe.sh`](env-probe.sh)、[`probes/`](probes/) | 按「假设 → 实验 → 对照」写的环境探测 |
 | [`shizuku-up.sh`](shizuku-up.sh) | 重启后恢复无线 ADB / Shizuku 通道 |
 
 ## 补丁清单
 
-共 26 条，编号与 `android-fix.mjs` 里的注释一致。
+共 27 条，编号与 `android-fix.mjs` 里的注释一致。
 
 **Android 平台差异**（1–8）：
 
@@ -262,7 +264,7 @@ this host; refusing to run the command unconfined.
 | 10 | 启动崩：`host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64` | `profile-boot-<hash>.js` 的 `resolutionMode` 默认值由 `runtime` 改回 `link` |
 | 11 | 启动崩：`--expose-internals is required for HMR service` | 从 `dsh-base/cordis.patch.yml` 移除硬编码的 `dsh-hmr` 条目 |
 
-**界面、插件与工具链**（12–26）：
+**界面、插件与工具链**（12–27）：
 
 | # | 现象 | 处理 |
 |---|---|---|
@@ -281,6 +283,7 @@ this host; refusing to run the command unconfined.
 | 24 | 不编辑文件就没办法指定「新会话从哪段提示词开始」，也改不了默认预设 | 通用设置页加了初始化提示词编辑器（通过 3098 的状态守护进程读写 `$DSH_HOME/AGENTS.md`——App 与 Termux 不是同一个 UID，碰不到 Termux 的家目录）、默认预设选择（走普通 settings RPC 改 `agent-preset-registry`）和重启按钮。提示词仍然是普通文件，编辑器只是便利入口，不引入新的存储格式 |
 | 25 | 文件预览头里的长路径永远看不全：左侧被裁掉并渐隐，完整路径只存在于 `title` 属性里——而触屏没有 hover | 点一下路径就地展开（头部跟着变高、路径换行显示完整），再点一下收回。壳里用的是预编译的那份 label，所以补丁改的是文件预览插件自己的两个调用点（它的 bundle 从磁盘现读，改完即生效） |
 | 26 | 「显示文件位置」只会失败：`无法显示文件位置，请重试` | 安卓没有可用的文件管理器去定位文件——`nativeFileManager()` 对 `android` 返回 null，这个按钮从构造上就是死的。改成：同样的控件在安卓上把**绝对路径复制到剪贴板**，并用 toast 确认；文字与图标改成「复制完整路径」。用原生应用打开文件的那条路不受影响 |
+| 27 | 侧边栏放不了视频：`/api/file` 只返回整文件、忽略 `Range`，还有 20 MB 上限，媒体元素拿到 `200`/`413` 只能放弃 | 让每个带 `Range` 的 `GET` 只读一个字节窗口（`206` + `Content-Range` + `Accept-Ranges`，8 MB 一窗），无法满足返回 `416`，`HEAD` 如实报大小；不带 `Range` 的 GET 保留 20 MB 上限。`video-preview/` bundle 就靠它流式播放 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
@@ -295,6 +298,19 @@ this host; refusing to run the command unconfined.
 会话中途改动会立刻生效。如果你要的是让它进**初始系统提示词**（第一条用户消息之前、system 角色），
 可以装可选的 [`startup-prompt/`](startup-prompt/) bundle；两条路径并存，怎么只留一条写在它的
 README 里。
+
+## 视频 / 音频预览
+
+可选的 [`video-preview/`](video-preview/) bundle 把视频和音频直接放进右侧边栏预览。文件
+**留在 Termux 私有目录里**——不导出、不起外部应用——因为 body 从鉴权的 `/api/file` 路由流式读取，
+交给 `<video>` / `<audio>` 元素。
+
+流式播放依赖字节范围，也就是**补丁 27**：每个带 `Range` 的 `GET` 返回一个 8 MB 上限的窗口
+（`206` + `Content-Range`），无法满足的范围返回 `416`，`HEAD` 如实报告大小而不是被 20 MB 整文件
+上限挡住。没有这条补丁，路由只会返回整文件 `200`（或 `413`），Chromium 直接放弃。
+
+当 WebView 的解码器吃不掉某个容器/编码（HEVC、很多 mkv/avi）时，面板会说明原因，并提供
+**复制路径**和**用外部播放器打开**。安装与测试说明见 [`video-preview/README.md`](video-preview/README.md)。
 
 ## 装插件
 
