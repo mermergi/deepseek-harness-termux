@@ -302,8 +302,10 @@ README 里。
 ## 视频 / 音频预览
 
 可选的 [`video-preview/`](video-preview/) bundle 把视频和音频直接放进右侧边栏预览。文件
-**留在 Termux 私有目录里**——不导出、不起外部应用——因为 body 从鉴权的 `/api/file` 路由流式读取，
-交给 `<video>` / `<audio>` 元素。
+**留在 Termux 私有目录里**——不导出、不起外部应用。body 先用鉴权的 `/api/file` 探测文件：
+16 MB 以内整段取回、用本地 blob 播放（这样即使 Termux 被冻结也打断不了播放），更大的按字节范围
+流式读取，再交给 `<video>` / `<audio>` 元素。探测失败会退避重试，并在 `~/.dsh-app/status.log`
+里留下 `[video-preview]` 诊断行。
 
 流式播放依赖字节范围，也就是**补丁 27**：每个带 `Range` 的 `GET` 返回一个 8 MB 上限的窗口
 （`206` + `Content-Range`），无法满足的范围返回 `416`，`HEAD` 如实报告大小而不是被 20 MB 整文件

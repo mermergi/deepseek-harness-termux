@@ -312,8 +312,11 @@ to keep only one.
 
 The optional [`video-preview/`](video-preview/) bundle plays video and audio inside the
 sidebar preview. Files stay in Termux's private directory — nothing is exported and no
-external app is opened — because the body streams the file from the authenticated
-`/api/file` route through a `<video>`/`<audio>` element.
+external app is opened. The body probes the file over the authenticated `/api/file` route,
+plays anything up to 16 MB from a local blob (so a frozen Termux cannot interrupt
+playback) and streams larger files by byte range, then hands the source to a
+`<video>`/`<audio>` element. A failed probe is retried with backoff and logged as
+`[video-preview]` in `~/.dsh-app/status.log`.
 
 That streaming needs byte ranges, which is what **patch 27** adds: one bounded 8 MB window
 per ranged `GET` (`206` with `Content-Range`), `416` for an unsatisfiable range, and a

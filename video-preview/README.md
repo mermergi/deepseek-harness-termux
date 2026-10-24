@@ -22,6 +22,24 @@ The body still offers the two escapes a preview cannot replace: **copy the absol
 and **open in an external player** (the same `session.openWorkspacePath` call the "open in
 app" control uses, i.e. `termux-open` on this device).
 
+## How a file gets played
+
+The body never hands a URL straight to `<video>`. On every open it first probes the file
+with a ranged `fetch` (`Range: bytes=0-1023`, `credentials: same-origin`) — the same
+authenticated path the app already uses for RPC — and then:
+
+- **≤ 16 MB**: fetches the whole file and plays a `blob:` URL. The element talks to no
+  network at all, so a flaky or frozen server cannot interrupt playback, and seeking is
+  local. This is what a phone screen recording (a few MB) hits.
+- **> 16 MB**: streams the file by URL, which is where patch 27 below matters.
+
+A probe that fails is retried with backoff (800 ms → 5 s, four tries): Android freezes
+Termux in the background, and a request issued during the thaw would otherwise surface as
+a bogus "format error". The media element itself also gets one silent retry. Every step
+logs a `[video-preview]` line, and the app captures the page console into
+`~/.dsh-app/status.log`, so a remaining failure can be told apart from a decoder problem
+by reading that log.
+
 ## Requirement: android-fix.mjs patch 27
 
 `/api/file` originally reads the whole file, answers `200`, ignores `Range`, and refuses
