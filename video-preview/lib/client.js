@@ -133,13 +133,21 @@ window.__ModuleLoader__.load({
 		/**
 		 * Authenticated file URL for one host path, resolved against the page base so a
 		 * deployment prefix keeps working.
+		 *
+		 * The file route addresses a version: a bare `?path=` request is answered 302 to
+		 * `?path=…&v=…`, and only the versioned URL is answered with the file itself
+		 * (cached immutable). Carrying the version the resource metadata already reported
+		 * therefore removes a redirect from every probe, preload and seek.
 		 * @param path - absolute host path.
+		 * @param version - `useResource(address).value.version`, when the owner reports it.
 		 * @returns the URL, or undefined when no valid base exists.
 		 */
-		function mediaUrl(path) {
+		function mediaUrl(path, version) {
 			const base = typeof document === "undefined" ? "/" : document.baseURI;
 			try {
-				return new URL(`api/file?path=${encodeURIComponent(path)}`, base).href;
+				const query = new URLSearchParams({ path });
+				if (version !== void 0 && version !== null && String(version) !== "") query.set("v", String(version));
+				return new URL(`api/file?${query.toString()}`, base).href;
 			} catch {
 				return void 0;
 			}
@@ -257,9 +265,10 @@ window.__ModuleLoader__.load({
 			// address alone may hold a workspace-relative path. Never guess "/" + address.
 			const resource = typeof props.useResource === "function" ? props.useResource(resourceAddress) : void 0;
 			const absolutePath = resource !== void 0 && resource.value !== void 0 ? resource.value.absolutePath : void 0;
+			const version = resource !== void 0 && resource.value !== void 0 ? resource.value.version : void 0;
 			const address = (0, react.useMemo)(() => parseFileAddress(resourceAddress), [resourceAddress]);
 			const path = (0, react.useMemo)(() => resolveMediaPath(resourceAddress, absolutePath), [resourceAddress, absolutePath]);
-			const url = (0, react.useMemo)(() => (path === void 0 ? void 0 : mediaUrl(path)), [path]);
+			const url = (0, react.useMemo)(() => (path === void 0 ? void 0 : mediaUrl(path, version)), [path, version]);
 			const [phase, setPhase] = (0, react.useState)("probing");
 			const [src, setSrc] = (0, react.useState)();
 			const [size, setSize] = (0, react.useState)(0);

@@ -7,7 +7,7 @@
 #   bash install.sh                      # 安装到 ~/dsh
 #   bash install.sh --deps               # 顺带用 pkg 装 Termux 依赖
 #   bash install.sh --dir ~/foo          # 自定义安装目录
-#   bash install.sh --version 0.2.1-rc.2 # 固定版本（便于复现）
+#   bash install.sh --version 0.2.2-alpha.2 # 固定版本（便于复现）
 #
 # 仓库：https://github.com/mermergi/deepseek-harness-termux
 set -euo pipefail

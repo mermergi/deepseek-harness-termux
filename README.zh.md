@@ -55,7 +55,7 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Node.js | `^22.19.0 \|\| >=24.0.0`（dsh 的 engines 要求，实测 v26.4.0） |
 | 编译工具链 | `clang` + `make` + `python`（node-pty 在安卓上没有预编译，要靠 node-gyp 现编） |
 | 搜索工具 | `ripgrep`（`pkg install ripgrep`）：`@vscode/ripgrep` 没有安卓构建，见补丁 6；PATH 里没有 `rg` 时 `glob`/`grep` 工具不可用 |
-| 磁盘 | 约 320 MB（dsh 会拉约 600 个 npm 包；`0.2.1-rc.2` 实测 608 个） |
+| 磁盘 | 约 520 MB（dsh 会拉约 650 个 npm 包；`0.2.2-alpha.2` 实测 648 个、本机 516 MB） |
 | 网络 | 能访问 npm registry 和你选的模型 API（DeepSeek 官方或兼容网关） |
 
 ## 快速开始
@@ -74,7 +74,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | 顺带用 `pkg install` 安装 Termux 依赖（nodejs python clang make） |
 | `--dir ~/foo` | 换安装目录（会自动写进启动脚本的 `DSH_DIR`） |
-| `--version 0.2.1-rc.2` | 固定 dsh 版本，便于复现 |
+| `--version 0.2.2-alpha.2` | 固定 dsh 版本，便于复现 |
 
 ### 方式 B：手动逐步
 
@@ -101,7 +101,7 @@ npm install @img/sharp-wasm32 sharp
 - **必须补 `@img/sharp-wasm32`。** `sharp` 没有 android-arm64 预编译，缺了它附件插件会在**启动阶段**直接让 dsh 崩掉，所以这条不是可选项。
 - **装 dsh 时必须加 `--ignore-scripts`。** dsh 的依赖 `koffi` 会在 postinstall 里跑 CMake 编译，在 Termux 上必然失败，而 npm 一旦遇到脚本失败就会放弃整次安装。这台机器上没有任何东西会加载 koffi 绑定——能正常运行的安装里也没有 koffi 的二进制产物。
 
-> 想复现本文档验证过的版本：`0.2.1-rc.2`（`next` 标签；`latest` 仍停在 `0.2.0-rc.2`）。见[装哪个版本](#装哪个版本)。
+> 想复现本文档验证过的版本：`0.2.2-alpha.2`（`alpha` 标签；`next` 停在 `0.2.1-rc.4`、`latest` 停在 `0.2.1-rc.2`）。见[装哪个版本](#装哪个版本)。
 
 #### 3. 打补丁
 
@@ -248,7 +248,7 @@ this host; refusing to run the command unconfined.
 | 4 | 启动崩：HMR 服务加载失败 | profile 的 `patchReload` 由 `live` 改 `startup` |
 | 5 | 发图被拒（外壳码 `session/agent-busy`） | 祖先目录 fsync 遇 `EACCES`/`EPERM` 就跳过 |
 | 6 | `glob`/`grep` 报 `SEARCH_FAILED`（`ripgrep launch failed`） | 补上缺失的 `@vscode/ripgrep-android-arm64`，转发到系统 `rg` |
-| 7 | 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航挪到顶部 |
+| 7 | 设置页右侧被挤扁（手机竖屏） | 注入 `<720px` 的一小段 CSS，把导航摞到内容上方。`0.2.2` 把对话框重写成带命名区域的 CSS grid（`title`/`header`/`nav`/`options`），所以对 `0.2.2` 改的是 `grid-template-areas`，对 `0.2.1` 保留原来的 flex 版本；写哪一种是从安装目录里的 bundle 读出来的 |
 | 8 | 点"打开配置文件"没反应 | android 分支改用 `termux-open`，并按扩展名传 `--content-type` |
 
 **性能**（9）：
@@ -268,7 +268,7 @@ this host; refusing to run the command unconfined.
 
 | # | 现象 | 处理 |
 |---|---|---|
-| 12 | 侧栏面板图标再点一次不收起（页面被挤成竖条） | 面板行改为 toggle：已选中时 `selectPanel(null)` 回到对话 |
+| 12 | 侧栏面板图标再点一次不收起（页面被挤成竖条） | 面板行改为 toggle：已选中时 `selectPanel(null)` 回到对话（`0.2.2` 把点击改成了 `trackEntryClick` + `selectPanel` 一块，因此锚点保留整段——单看 `selectPanel(id)` 并不唯一） |
 | 13 | 图标 tooltip 点完不消失（要点别处才没） | 侧栏 5 处 Tooltip 设为 `disabled`（触摸屏没有悬停，气泡只会滞留） |
 | 14 | 想重启得靠命令行 | 通用设置页底部加「重启 DSH 服务」按钮（原生 ↔ Web 桥接，带二次确认） |
 | 15 | 装了插件后启动崩：`Cannot find package '<plugin>'` | 把 profile 里装的插件链进安装目录；顺带清理悬空链接 |
@@ -283,7 +283,7 @@ this host; refusing to run the command unconfined.
 | 24 | 不编辑文件就没办法指定「新会话从哪段提示词开始」，也改不了默认预设 | 通用设置页加了初始化提示词编辑器（通过 3098 的状态守护进程读写 `$DSH_HOME/AGENTS.md`——App 与 Termux 不是同一个 UID，碰不到 Termux 的家目录）、默认预设选择（走普通 settings RPC 改 `agent-preset-registry`）和重启按钮。提示词仍然是普通文件，编辑器只是便利入口，不引入新的存储格式 |
 | 25 | 文件预览头里的长路径永远看不全：左侧被裁掉并渐隐，完整路径只存在于 `title` 属性里——而触屏没有 hover | 点一下路径就地展开（头部跟着变高、路径换行显示完整），再点一下收回。壳里用的是预编译的那份 label，所以补丁改的是文件预览插件自己的两个调用点（它的 bundle 从磁盘现读，改完即生效） |
 | 26 | 「显示文件位置」只会失败：`无法显示文件位置，请重试` | 安卓没有可用的文件管理器去定位文件——`nativeFileManager()` 对 `android` 返回 null，这个按钮从构造上就是死的。改成：同样的控件在安卓上把**绝对路径复制到剪贴板**，并用 toast 确认；文字与图标改成「复制完整路径」。用原生应用打开文件的那条路不受影响 |
-| 27 | 侧边栏放不了视频：`/api/file` 只返回整文件、忽略 `Range`，还有 20 MB 上限，媒体元素拿到 `200`/`413` 只能放弃 | 让每个带 `Range` 的 `GET` 只读一个字节窗口（`206` + `Content-Range` + `Accept-Ranges`，8 MB 一窗），无法满足返回 `416`，`HEAD` 如实报大小；不带 `Range` 的 GET 保留 20 MB 上限。`video-preview/` bundle 就靠它流式播放 |
+| 27 | 侧边栏放不了视频：`/api/file` 只返回整文件、忽略 `Range`，还有 20 MB 上限，媒体元素拿到 `200`/`413` 只能放弃 | 让每个带 `Range` 的 `GET` 只读一个字节窗口（`206` + `Content-Range` + `Accept-Ranges`，8 MB 一窗），无法满足返回 `416`，`HEAD` 如实报大小；不带 `Range` 的 GET 保留 20 MB 上限。`0.2.2` 重写了这个 handler：裸 `?path=` 会 `302` 到 `?path=…&v=…`，只按带版本号的 URL 出文件，整文件上限也挪到了函数开头，所以补丁同时让 `HEAD` 和带 `Range` 的请求豁免该上限。`video-preview/` bundle 自带版本号并靠它流式播放 |
 
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
@@ -310,6 +310,10 @@ README 里。
 流式播放依赖字节范围，也就是**补丁 27**：每个带 `Range` 的 `GET` 返回一个 8 MB 上限的窗口
 （`206` + `Content-Range`），无法满足的范围返回 `416`，`HEAD` 如实报告大小而不是被 20 MB 整文件
 上限挡住。没有这条补丁，路由只会返回整文件 `200`（或 `413`），Chromium 直接放弃。
+
+`0.2.2` 起文件按版本寻址：不带当前 `v` 的请求会被 `302` 到带版本号的 URL，而那个 URL 的响应可以
+长期缓存。bundle 会把资源元数据里已有的版本号放进自己的 URL，探测、预载和拖动进度都不再走那次
+重定向；元数据没给版本号时，走重定向也照样能用。
 
 当 WebView 的解码器吃不掉某个容器/编码（HEVC、很多 mkv/avi）时，面板会说明原因，并提供
 **复制路径**和**用外部播放器打开**。安装与测试说明见 [`video-preview/README.md`](video-preview/README.md)。
@@ -351,7 +355,7 @@ README 里。
 
 ```sh
 node ~/.dsh-app/upgrade.mjs            # 升到 next dist-tag
-node ~/.dsh-app/upgrade.mjs 0.2.1-rc.2 # 指定版本
+node ~/.dsh-app/upgrade.mjs 0.2.2-alpha.2 # 指定版本
 node ~/.dsh-app/upgrade.mjs --dry-run  # 只看计划
 ```
 
@@ -371,18 +375,23 @@ node ~/dsh/android-fix.mjs
 
 ### 装哪个版本
 
-**推荐 `0.2.1-rc.2`** —— 本机端到端验证过的版本（2026-10）：
+**新装推荐 `0.2.2-alpha.2`** —— 本机端到端验证过的版本（2026-10-29）：
 
 ```sh
 cd ~/dsh
 npm install --ignore-scripts \
-  @deepseek-ai/dsh@0.2.1-rc.2 @deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.2
+  @deepseek-ai/dsh@0.2.2-alpha.2 @deepseek-ai/dsh-client-ui-primitives@0.2.2-alpha.2
 npm install @img/sharp-wasm32 sharp
 node ~/dsh/android-fix.mjs
 ```
 
-npm 的 `next` 标签指向 `0.2.1-rc.2`；`latest` 仍停在 `0.2.0-rc.2`，那个也能跑。所以直接
-`npm install @deepseek-ai/dsh` 装到的是 `latest`，不是本文验证的版本。
+`0.2.2-alpha.2` 挂在 npm 的 `alpha` 标签上，不会被顺手装到：`next` 指向 `0.2.1-rc.4`、`latest`
+停在 `0.2.1-rc.2`，直接 `npm install @deepseek-ai/dsh` 装到的是 `latest`。请显式写版本。
+`0.2.1-rc.2` 是上一个验证过的版本，补丁仍然覆盖它，回滚过去还能用。
+
+补丁会先读安装目录里代码的实际形状，所以同一个 `android-fix.mjs` 两个版本都吃：`0.2.2` 把设置页
+改成 CSS grid（补丁 7）、把「显示文件位置」的结果提示挪进共享的 `report` 座位（补丁 26）、把
+`/api/file` 改成先重定向到带版本号的 URL（补丁 27）。
 
 升级已有安装请走[带护栏的升级器](#安全升级推荐)，不要往正在运行的树上面直接装：它会在停服务
 **之前**就把有问题的版本拒掉，新树健康检查不过还会自动回滚。
@@ -441,8 +450,10 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 **已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 → 2026-10-18）：
 
-- dsh `0.1.5-rc.1` 到 `0.2.1-rc.2` 各版都装得上、补得齐、跑得通；本文档当前针对 `0.2.0-rc.2` 与 `0.2.1-rc.2`；
-- `0.2.1-rc.2` 在本机：200 个插件条目、0 失败 0 挂起，右侧边栏终端能开，`startup-prompt` 段确实进了初始系统提示词；
+- dsh `0.1.5-rc.1` 到 `0.2.2-alpha.2` 各版都装得上、补得齐、跑得通；本文档当前针对 `0.2.2-alpha.2`，上一个验证版本是 `0.2.1-rc.2`；
+- `0.2.2-alpha.2` 在本机：209 个插件条目、0 失败 0 挂起，右侧边栏终端能开，`startup-prompt` 段确实进了初始系统提示词；
+- `0.2.1-rc.2` → `0.2.2-alpha.2` 的升级在沙箱安装里整条跑通（独立 `DSH_DIR`/`DSH_HOME`/端口）：stage → 打补丁 → 备用端口试运行 → 替换 → 打补丁 → 启动 → 健康检查，四项全绿；对带版本号 URL 发带 `Range` 的请求拿到 `206` 与 `Content-Range`；
+- 补丁 7、12、26、27 针对 `0.2.2` 重新锚定（grid 设置页、`trackEntryClick` 行、`report` 结果座位、带版本号的文件路由），同时仍能补 `0.2.1`；
 - 升级护栏在沙箱里逐个跑过：演练失败的版本被拒且**正在跑的服务完全没停**、换树后健康检查失败自动回滚、连续两次启动失败自动恢复上一版、换树前启动的老进程能被识别并替换；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；

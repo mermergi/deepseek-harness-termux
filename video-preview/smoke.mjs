@@ -128,6 +128,9 @@ if (helpers.parseFileAddress('nope') !== undefined) throw new Error('bad address
 console.log('address resolution OK')
 const url = helpers.mediaUrl('/data/data/com.termux/files/home/x.mp4')
 if (url !== 'http://127.0.0.1:3080/api/file?path=%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome%2Fx.mp4') throw new Error(`mediaUrl = ${url}`)
+// 0.2.2 answers a bare path with 302; the versioned URL is the one that returns bytes.
+const versioned = helpers.mediaUrl('/data/data/com.termux/files/home/x.mp4', 'm1')
+if (versioned !== 'http://127.0.0.1:3080/api/file?path=%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome%2Fx.mp4&v=m1') throw new Error(`versioned mediaUrl = ${versioned}`)
 console.log('mediaUrl OK')
 const rangeHeaders = new Map([['content-range', 'bytes 0-1023/1721428'], ['content-length', '1024']])
 if (helpers.totalFromHeaders({ get: (name) => rangeHeaders.get(name) ?? null }) !== 1721428) throw new Error('totalFromHeaders range failed')

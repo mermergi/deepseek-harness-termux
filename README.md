@@ -52,10 +52,10 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Item | Requirement |
 |---|---|
 | OS | Android + Termux (verified on aarch64) |
-| Node.js | `^22.19.0 \|\| >=24.0.0` (dsh's `engines` requirement; verified on v26.4.0) |
+| Node.js | `^22.19.0 \|\| >=24.0.0`; `0.2.2-alpha.2` declares `>=24.9.0` (verified on v26.4.0) |
 | Build toolchain | `clang` + `make` + `python` (node-pty ships no Android prebuild, so node-gyp has to compile it on device) |
 | Search tool | `ripgrep` (`pkg install ripgrep`): `@vscode/ripgrep` has no Android build, see patch 6; with no `rg` on `PATH` the `glob`/`grep` tools are unavailable |
-| Disk | roughly 320 MB (dsh pulls in about 600 npm packages; `0.2.1-rc.2` measured 608) |
+| Disk | roughly 520 MB (dsh pulls in about 650 npm packages; `0.2.2-alpha.2` measured 648 and 516 MB apparent on this device) |
 | Network | access to the npm registry and to the model API of your choice (DeepSeek official, or a compatible gateway) |
 
 ## Quick start
@@ -74,7 +74,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | also install the Termux dependencies with `pkg install` (nodejs python clang make) |
 | `--dir ~/foo` | install somewhere else (the path is written into the launcher's `DSH_DIR`) |
-| `--version 0.2.1-rc.2` | pin the dsh version, for reproducibility |
+| `--version 0.2.2-alpha.2` | pin the dsh version, for reproducibility |
 
 ### Option B: manual, step by step
 
@@ -101,7 +101,7 @@ Three things matter here:
 - **`@img/sharp-wasm32` is not optional.** `sharp` ships no android-arm64 prebuild, and without it the attachment plugin crashes dsh **during startup**.
 - **`--ignore-scripts` is required on the dsh install.** `koffi`, a dependency of dsh, runs a CMake build in its postinstall; that fails on Termux and npm then abandons the whole install. Nothing on this host loads the koffi binding — the working tree carries no koffi binaries either.
 
-> To reproduce the release verified in this document: `0.2.1-rc.2` (the `next` tag; `latest` still points at `0.2.0-rc.2`). See [Which version to install](#which-version-to-install).
+> To reproduce the release verified in this document: `0.2.2-alpha.2` (the `alpha` tag; `next` still points at `0.2.1-rc.4` and `latest` at `0.2.1-rc.2`). See [Which version to install](#which-version-to-install).
 
 #### 3. Apply the patches
 
@@ -255,7 +255,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 4 | Startup crash: the HMR service fails to load | the profile's `patchReload` moves from `live` to `startup` |
 | 5 | Image sends rejected (shell code `session/agent-busy`) | skip the ancestor-directory fsync when it hits `EACCES`/`EPERM` |
 | 6 | `glob`/`grep` report `SEARCH_FAILED` (`ripgrep launch failed`) | supply the missing `@vscode/ripgrep-android-arm64` and forward to the system `rg` |
-| 7 | The right side of the settings page is squeezed (phone portrait) | inject a small `<720px` CSS block that moves the navigation to the top |
+| 7 | The right side of the settings page is squeezed (phone portrait) | inject a small `<720px` CSS block that stacks the navigation above the content. `0.2.2` rebuilt the dialog as a CSS grid with named areas (`title`/`header`/`nav`/`options`), so the block rewrites `grid-template-areas` there and keeps the flex variant for `0.2.1`; which one is written is read from the installed bundle |
 | 8 | "Open config file" does nothing | the android branch uses `termux-open` instead, passing `--content-type` according to the extension |
 
 **Performance** (9):
@@ -275,7 +275,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 
 | # | Symptom | Fix |
 |---|---|---|
-| 12 | Re-tapping a sidebar panel icon does not close it (the page collapses into a sliver) | the panel row toggles: `selectPanel(null)` when already active, returning to the conversation |
+| 12 | Re-tapping a sidebar panel icon does not close it (the page collapses into a sliver) | the panel row toggles: `selectPanel(null)` when already active, returning to the conversation (`0.2.2` moved the click into a `trackEntryClick` + `selectPanel` block; the anchor keeps the whole block because `selectPanel(id)` alone is not unique) |
 | 13 | An icon tooltip never goes away after a tap | disable the sidebar's five tooltips (no hover on a touch screen, so the bubble can only linger) |
 | 14 | Restarting means reaching for a terminal | a "Restart DSH service" button at the bottom of the General settings page (native ↔ web bridge, with confirmation) |
 | 15 | Boot fails after installing a plugin: `Cannot find package '<plugin>'` | link plugins installed into a profile into the install directory; also sweep dangling links |
@@ -290,7 +290,7 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 24 | No way to set the prompt a new session starts from, or its default preset, without editing files | the General settings page gets the session-initialization prompt editor (reads and writes `$DSH_HOME/AGENTS.md` through the loopback status daemon on port 3098, because the app runs as a different UID and cannot touch Termux's home), the default-preset picker (`agent-preset-registry` through the ordinary settings RPC) and the restart button. The prompt is an ordinary file: the editor is a convenience, not a new storage format |
 | 25 | A long path in the file-preview header can never be read in full: it is clipped from the left with a fade, and the complete path lives only in the `title` attribute — a touch screen cannot hover | tap the path and it expands in place (the header grows, the path wraps); tap again to collapse. The label the shell uses is a prebuilt copy, so the patch replaces the two call sites in the document-preview plugin, whose bundle is served from disk |
 | 26 | "Show file location" can only fail: `无法显示文件位置，请重试` (could not show the file location) | Android has no file manager to reveal a path in — `nativeFileManager()` answers null for `android`, so the button is dead by construction. On Android the same control copies the absolute path through the clipboard helper and confirms with a toast; the label and icon change to "copy full path". Opening the file with a native application is untouched |
-| 27 | A video in the sidebar cannot play: `/api/file` reads the whole file, ignores `Range`, and refuses anything over 20 MB with `413`, so a media element gets `200`/`413` and gives up | honour one byte range per `GET` (`206` + `Content-Range` + `Accept-Ranges`, one bounded 8 MB window), answer `416` for a range that cannot be satisfied, and let `HEAD` report the size; the plain non-ranged `GET` keeps its 20 MB cap. The [`video-preview/`](video-preview/) bundle streams through this |
+| 27 | A video in the sidebar cannot play: `/api/file` reads the whole file, ignores `Range`, and refuses anything over 20 MB with `413`, so a media element gets `200`/`413` and gives up | honour one byte range per `GET` (`206` + `Content-Range` + `Accept-Ranges`, one bounded 8 MB window), answer `416` for a range that cannot be satisfied, and let `HEAD` report the size; the plain non-ranged `GET` keeps its 20 MB cap. `0.2.2` rewrote this handler to answer a bare `?path=` with `302` to `?path=…&v=…` and only serve the versioned URL, so the patch also keeps `HEAD`/range requests exempt from the whole-file cap that now sits at the top of the function. The [`video-preview/`](video-preview/) bundle carries the version in its URL and streams through this |
 
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
@@ -323,6 +323,12 @@ per ranged `GET` (`206` with `Content-Range`), `416` for an unsatisfiable range,
 `HEAD` that reports the size instead of hiding it behind the 20 MB whole-file cap. Without
 the patch the route answers a whole-file `200` (or `413`) and Chromium gives up on the
 source.
+
+`0.2.2` addresses a file by its version: a request without the current `v` is answered
+`302` to the versioned URL, whose response is cacheable and immutable. The bundle reads the
+version the resource metadata already reports and puts it in its own URLs, so its probe,
+preload and seeks skip that redirect; a resource that reports no version still works through
+the redirect.
 
 When the WebView's decoders cannot handle a container or codec (HEVC, many mkv/avi files),
 the panel says so and offers **copy path** and **open in external player** instead. Install
@@ -365,7 +371,7 @@ Upgrading by hand is how this install broke twice: a server kept serving from a 
 
 ```sh
 node ~/.dsh-app/upgrade.mjs            # upgrade to the `next` dist-tag
-node ~/.dsh-app/upgrade.mjs 0.2.1-rc.2 # explicit version
+node ~/.dsh-app/upgrade.mjs 0.2.2-alpha.2 # explicit version
 node ~/.dsh-app/upgrade.mjs --dry-run  # plan only
 ```
 
@@ -385,18 +391,25 @@ That re-run only re-applies patches. A **version** change should go through the 
 
 ### Which version to install
 
-**`0.2.1-rc.2` is recommended** — the release verified end to end here (2026-10):
+**`0.2.2-alpha.2` is recommended for a fresh install** — the release verified end to end here (2026-10-29):
 
 ```sh
 cd ~/dsh
 npm install --ignore-scripts \
-  @deepseek-ai/dsh@0.2.1-rc.2 @deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.2
+  @deepseek-ai/dsh@0.2.2-alpha.2 @deepseek-ai/dsh-client-ui-primitives@0.2.2-alpha.2
 npm install @img/sharp-wasm32 sharp
 node ~/dsh/android-fix.mjs
 ```
 
-npm's `next` tag points at `0.2.1-rc.2`; `latest` still points at `0.2.0-rc.2`, which also works. A
-bare `npm install @deepseek-ai/dsh` gets you `latest`, not the verified release.
+`0.2.2-alpha.2` sits on npm's `alpha` tag, so nothing resolves to it by accident: `next` points at
+`0.2.1-rc.4` and `latest` at `0.2.1-rc.2`, and a bare `npm install @deepseek-ai/dsh` gets you
+`latest`, not this release. Pin the version. `0.2.1-rc.2` is the previous release verified here and
+the patches still cover it, so rolling back to it keeps working.
+
+The patches read the shapes they find in the installed bundle, so one `android-fix.mjs` serves both
+releases: `0.2.2` rebuilt the settings dialog as a CSS grid (patch 7), moved the "show file
+location" outcome plumbing into a shared `report` seat (patch 26), and made `/api/file` redirect a
+bare path to a versioned URL (patch 27).
 
 Upgrading an existing install: use the [guarded upgrader](#safe-upgrade-recommended) instead of
 installing on top of a live tree. It rejects a regressed release before the running server is
@@ -454,10 +467,12 @@ dsh is in developer preview and upgrades may bring breaking changes. If the scri
 
 ## Verification and notes
 
-**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 → 2026-10-18):
+**Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 → 2026-10-29):
 
-- dsh `0.1.5-rc.1` through `0.2.1-rc.2` install, patch and run; `0.2.0-rc.2` and `0.2.1-rc.2` are the releases this document currently targets;
-- `0.2.1-rc.2` on this device: 200 plugin entries with none failed or stalled, the right-sidebar terminal opens, and the `startup-prompt` section lands in the initial system prompt;
+- dsh `0.1.5-rc.1` through `0.2.2-alpha.2` install, patch and run; `0.2.2-alpha.2` is the release this document currently targets, `0.2.1-rc.2` the previous one;
+- `0.2.2-alpha.2` on this device: 209 plugin entries with none failed or stalled, the right-sidebar terminal opens, and the `startup-prompt` section lands in the initial system prompt;
+- the `0.2.1-rc.2` → `0.2.2-alpha.2` upgrade ran end to end in a sandbox install (own `DSH_DIR`, `DSH_HOME`, port): stage → patch → rehearsal boot on a spare port → swap → patch → start → health check, all four checks green, and `/api/file` answered `206` with `Content-Range` for a ranged request against the versioned URL;
+- patches 7, 12, 26 and 27 were re-anchored for `0.2.2` (grid settings dialog, `trackEntryClick` row, `report` outcome seat, versioned file route) and still apply to `0.2.1`;
 - the upgrade guards were exercised in a sandbox: a release that fails its rehearsal is rejected with the live server untouched, a failed post-swap health check rolls back to the previous tree, two bad boots trigger the automatic rollback, and a server started before a tree swap is detected and replaced;
 - the Web UI responds and is usable at `127.0.0.1:3080`;
 - one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations;

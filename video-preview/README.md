@@ -58,6 +58,12 @@ cap.
 
 Without that patch the player still appears, but Chromium gives up on the source.
 
+`0.2.2` addresses the file by its version: a bare `?path=` is answered `302` to
+`?path=…&v=…`, and only the versioned URL returns bytes (cached immutable). The bundle takes
+the version the resource metadata already reports and puts it into its own URLs, so the
+probe, the whole-file preload and any seek skip that redirect; when no version is reported
+the redirect is followed, which also works.
+
 ## Install
 
 ```sh

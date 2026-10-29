@@ -292,6 +292,11 @@ if (process.platform === 'android') {
 // cramped on the right. Below 720px, stack the navigation above the content and
 // let it scroll sideways, which hands the content the full width.
 //
+// 0.2.1 laid that out with flex (`panel` column, `content` a flex child); 0.2.2
+// replaced it with a two-column CSS grid whose areas are named after the classes
+// (`title`/`header`/`nav`/`options`) and dropped `content`. Same intent, different
+// lever: the 0.2.2 block rewrites `grid-template-areas` and grid tracks.
+//
 // The class names are CSS-module hashes that change whenever the app is rebuilt,
 // so they are read from the installed bundle and the generated block is
 // rewritten in place. Selectors double the class name to outrank the plugin's
@@ -308,26 +313,57 @@ if (!existsSync(settingsShellPath) || !existsSync(shellIndexPath)) {
   if (shellPrefix === undefined) {
     problems.push(`settings layout: no class prefix found in ${settingsShellPath}`)
   } else {
-    const wanted = ['panel', 'nav', 'navTitle', 'navList', 'navCell', 'navLabel', 'content', 'header', 'options']
+    // 0.2.2 rebuilt this dialog as a CSS grid with named areas
+    // (`title header` / `nav options`) and dropped the `content` wrapper the 0.2.1
+    // flex layout had, so the portrait fix has to rewrite the area template instead
+    // of flipping one flex direction. Which shape to write is read from the bundle,
+    // because an install can legitimately be either release.
+    const gridShell = new RegExp(`\\.${shellPrefix}_panel\\{[^}]*display:grid`).test(shellSource)
+    const wanted = gridShell
+      ? ['panel', 'nav', 'navTitle', 'navList', 'navCell', 'navLabel', 'header', 'options']
+      : ['panel', 'nav', 'navTitle', 'navList', 'navCell', 'navLabel', 'content', 'header', 'options']
     const absent = wanted.filter((name) => !shellSource.includes(`.${shellPrefix}_${name}{`))
     if (absent.length > 0) {
       problems.push(`settings layout: classes missing from the bundle: ${absent.join(', ')}`)
     } else {
       const sel = (name) => `.${shellPrefix}_${name}.${shellPrefix}_${name}`
+      // The area names are the ones the child rules already name (`grid-area: <prefix>_nav`),
+      // not the class names: the dialog calls its title area `<prefix>_title`.
+      const area = (name) => `${shellPrefix}_${name}`
       const block = [
         UI_START,
         '<style>',
         '/* Android/Termux portrait fix for the settings dialog — written by android-fix.mjs. */',
         '@media (max-width: 720px) {',
-        `  ${sel('panel')} { flex-direction: column; max-width: calc(100vw - 16px); height: min(800px, 100vh - 16px); height: min(800px, 100dvh - 16px); }`,
-        `  ${sel('nav')} { flex-direction: row; width: auto; max-width: 100%; gap: 6px; padding: 10px 10px 0; overflow-x: auto; }`,
-        `  ${sel('navTitle')} { display: none; }`,
-        `  ${sel('navList')} { flex-direction: row; gap: 4px; }`,
-        `  ${sel('navCell')} { flex: none; height: 34px; padding: 6px 10px; }`,
-        `  ${sel('navLabel')} { flex: none; white-space: nowrap; }`,
-        `  ${sel('content')} { min-height: 0; }`,
-        `  ${sel('header')} { height: auto; padding: 12px 12px 6px; }`,
-        `  ${sel('options')} { padding: 0 12px 16px; }`,
+        ...(gridShell
+          ? [
+              `  ${sel('panel')} {`,
+              `    grid-template-areas: "${area('title')} ${area('header')}" "${area('nav')} ${area('nav')}" "${area('options')} ${area('options')}";`,
+              '    grid-template-columns: minmax(0, 1fr) auto;',
+              '    grid-template-rows: auto auto minmax(0, 1fr);',
+              '    max-width: calc(100vw - 16px);',
+              '    height: min(800px, calc(100vh - 16px));',
+              '    height: min(800px, calc(100dvh - 16px));',
+              '  }',
+              `  ${sel('navTitle')} { padding: 14px 8px 6px 16px; }`,
+              `  ${sel('header')} { height: auto; padding: 4px 10px 2px 0; }`,
+              `  ${sel('nav')} { padding: 4px 10px 0; }`,
+              `  ${sel('navList')} { flex-direction: row; gap: 4px; overflow-x: auto; overflow-y: hidden; }`,
+              `  ${sel('navCell')} { flex: none; height: 34px; padding: 6px 10px; }`,
+              `  ${sel('navLabel')} { flex: none; }`,
+              `  ${sel('options')} { padding: 0 12px 16px; }`,
+            ]
+          : [
+              `  ${sel('panel')} { flex-direction: column; max-width: calc(100vw - 16px); height: min(800px, 100vh - 16px); height: min(800px, 100dvh - 16px); }`,
+              `  ${sel('nav')} { flex-direction: row; width: auto; max-width: 100%; gap: 6px; padding: 10px 10px 0; overflow-x: auto; }`,
+              `  ${sel('navTitle')} { display: none; }`,
+              `  ${sel('navList')} { flex-direction: row; gap: 4px; }`,
+              `  ${sel('navCell')} { flex: none; height: 34px; padding: 6px 10px; }`,
+              `  ${sel('navLabel')} { flex: none; white-space: nowrap; }`,
+              `  ${sel('content')} { min-height: 0; }`,
+              `  ${sel('header')} { height: auto; padding: 12px 12px 6px; }`,
+              `  ${sel('options')} { padding: 0 12px 16px; }`,
+            ]),
         '}',
         '</style>',
         UI_END,
@@ -624,20 +660,36 @@ if (existsSync(sidebarClientPath)) {
   if (source.includes('ANDROID_PATCH_PANEL_TOGGLE')) {
     // already patched
   } else {
-    // The indent is five tabs and the `onClick` wrapper is what makes this
-    // unique: the bare `selectPanel(id);` also appears in the props wiring.
-    const anchor = '\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tselectPanel(id);\n\t\t\t\t\t},'
-    const replacement = [
-      '\t\t\t\t\t// ANDROID_PATCH_PANEL_TOGGLE: re-tapping the active panel returns to the conversation.',
+    // 0.2.1 wrapped the row body directly in `onClick`; 0.2.2 records the click first
+    // with `trackEntryClick` and then selects. Both end on the same statement, so the
+    // anchor keeps the surrounding block: a bare `selectPanel(id);` is not unique
+    // (`ctx.layout.selectPanel(id)` appears in the props wiring).
+    const newAnchor = [
       '\t\t\t\t\tonClick: () => {',
-      '\t\t\t\t\t\tselectPanel(active ? null : id);',
+      '\t\t\t\t\t\tconst entry = officialEntry(id);',
+      '\t\t\t\t\t\tif (entry !== void 0) trackEntryClick({',
+      '\t\t\t\t\t\t\tmenu_name: entry,',
+      '\t\t\t\t\t\t\tposition: "sidebar"',
+      '\t\t\t\t\t\t});',
+      '\t\t\t\t\t\tselectPanel(id);',
       '\t\t\t\t\t},',
     ].join('\n')
-    if (!source.includes(anchor)) {
-      problems.push(`panel toggle: anchor missing in ${sidebarClientPath} (sidebar row layout changed)`)
-    } else {
-      writeFileSync(sidebarClientPath, source.replace(anchor, replacement))
+    const oldAnchor = '\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tselectPanel(id);\n\t\t\t\t\t},'
+    const marker = '// ANDROID_PATCH_PANEL_TOGGLE: re-tapping the active panel returns to the conversation.'
+    if (source.includes(newAnchor)) {
+      writeFileSync(sidebarClientPath, source.replace(newAnchor, newAnchor.replace('\t\t\t\t\t\tselectPanel(id);', `\t\t\t\t\t\tselectPanel(active ? null : id); ${marker}`)))
       console.log('sidebar: panel icons toggle (tapping the active one closes it)')
+    } else if (source.includes(oldAnchor)) {
+      const replacement = [
+        '\t\t\t\t\t' + marker,
+        '\t\t\t\t\tonClick: () => {',
+        '\t\t\t\t\t\tselectPanel(active ? null : id);',
+        '\t\t\t\t\t},',
+      ].join('\n')
+      writeFileSync(sidebarClientPath, source.replace(oldAnchor, replacement))
+      console.log('sidebar: panel icons toggle (tapping the active one closes it)')
+    } else {
+      problems.push(`panel toggle: anchor missing in ${sidebarClientPath} (sidebar row layout changed)`)
     }
   }
 } else {
@@ -2060,6 +2112,28 @@ if (existsSync(openInAppClientPath)) {
   if (source.includes(revealCopyMarker)) {
     // already patched
   } else {
+    // 0.2.2 replaced the `null | "revealError"` return of `openPath` with an outcome
+    // object, and moved the success toast out of the button into the shared `report`
+    // seat. Both shapes are handled so the patch also keeps applying to 0.2.1 trees.
+    const outcomeObjects = source.includes('if (ok) return { kind: action === "reveal" ? "revealed" : "opened" };')
+    const toastEdit = outcomeObjects
+      ? [
+          '\t\t\t\ttext: t(toast.kind === "opened" ? "path.opened" : "path.revealed"),',
+          [
+            `\t\t\t\t// ${revealCopyMarker}: the copied path is the confirmation.`,
+            '\t\t\t\ttext: t(toast.kind === "opened" ? "path.opened" : ANDROID_REVEAL_COPY ? "path.copied" : "path.revealed"),',
+          ].join('\n'),
+        ]
+      : [
+          '\t\t\t\t\texecute(operation).then((failure) => {\n\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));\n\t\t\t\t\t}).finally(() => {',
+          [
+            '\t\t\t\t\texecute(operation).then((failure) => {',
+            '\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));',
+            `\t\t\t\t\t\t// ${revealCopyMarker}: a copy that worked deserves the same feedback as a failure.`,
+            '\t\t\t\t\t\telse if (ANDROID_REVEAL_COPY && operation.kind === "reveal") show(t("path.copied"));',
+            '\t\t\t\t\t}).finally(() => {',
+          ].join('\n'),
+        ]
     const edits = [
       [
         '\t\tlet _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");',
@@ -2077,21 +2151,14 @@ if (existsSync(openInAppClientPath)) {
           `\t\t\t\t// ${revealCopyMarker}: no Host round trip when there is nothing to reveal.`,
           '\t\t\t\tif (ANDROID_REVEAL_COPY && action === "reveal") {',
           '\t\t\t\t\tconst copied = await _deepseek_ai_dsh_client_ui_primitives.writeClipboard(path);',
-          '\t\t\t\t\treturn copied ? null : "revealError";',
+          outcomeObjects
+            ? '\t\t\t\t\treturn copied ? { kind: "revealed" } : { kind: "failed", failure: "revealError" };'
+            : '\t\t\t\t\treturn copied ? null : "revealError";',
           '\t\t\t\t}',
           '\t\t\t\tconst request = action === "reveal" ? {',
         ].join('\n'),
       ],
-      [
-        '\t\t\t\t\texecute(operation).then((failure) => {\n\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));\n\t\t\t\t\t}).finally(() => {',
-        [
-          '\t\t\t\t\texecute(operation).then((failure) => {',
-          '\t\t\t\t\t\tif (failure !== null) show(t(`path.${failure}`));',
-          `\t\t\t\t\t\t// ${revealCopyMarker}: a copy that worked deserves the same feedback as a failure.`,
-          '\t\t\t\t\t\telse if (ANDROID_REVEAL_COPY && operation.kind === "reveal") show(t("path.copied"));',
-          '\t\t\t\t\t}).finally(() => {',
-        ].join('\n'),
-      ],
+      toastEdit,
       [
         '\t\t\t"path.reveal": "显示文件位置",',
         [
@@ -2141,6 +2208,12 @@ if (existsSync(openInAppClientPath)) {
 // request instead of allocating the file), report `Accept-Ranges`, answer 416 when the
 // range cannot be satisfied, and stop applying the whole-file cap to HEAD (a media
 // element probes size through it). The plain non-ranged GET keeps its 20 MB cap.
+//
+// 0.2.2 rewrote the handler around a versioned URL: a request without the current `v`
+// is answered 302 to `?path=…&v=…`, the file answer carries `VERSIONED` (immutable)
+// caching, and the whole-file cap moved to the top of the function. The ranged answer
+// keeps the same 206 shape; the cap is skipped for HEAD and for any request that
+// carries a Range, which is what lets a large recording stream.
 const sessionControllerPath = join(nodeModules, '@deepseek-ai', 'dsh-api-session-controller', 'lib', 'index.js')
 const rangeMarker = 'ANDROID_PATCH_RANGE'
 if (existsSync(sessionControllerPath)) {
@@ -2191,30 +2264,62 @@ function resolveByteRange(range, size) {
       helperAnchor,
     ].join('')
 
-    const headersAnchor = '\t\tconst headers = {\n\t\t\t...BASE_HEADERS,\n\t\t\t"Content-Type": mediaType\n\t\t};'
-    const headersReplacement = [
+    // 0.2.2 rewrote this handler: the file answer is now `VERSIONED` and cacheable,
+    // a request without the current `v` is redirected to the versioned URL, and the
+    // whole-file cap moved to the top of the function. The range support therefore
+    // has three shapes to cover, chosen from the source that is actually installed.
+    const versionedHeaders = [
       '\t\tconst headers = {',
-      '\t\t\t...BASE_HEADERS,',
-      '\t\t\t"Content-Type": mediaType,',
-      `\t\t\t"Accept-Ranges": "bytes" // ${rangeMarker}`,
+      '\t\t\t...VERSIONED,',
+      '\t\t\t"Content-Type": mime.lookup(target.displayPath) || "application/octet-stream"',
       '\t\t};',
     ].join('\n')
+    const legacyHeaders = '\t\tconst headers = {\n\t\t\t...BASE_HEADERS,\n\t\t\t"Content-Type": mediaType\n\t\t};'
+    const versionedRoute = source.includes(versionedHeaders)
+    const headersAnchor = versionedRoute ? versionedHeaders : legacyHeaders
+    const headersReplacement = versionedRoute
+      ? [
+          '\t\tconst headers = {',
+          '\t\t\t...VERSIONED,',
+          '\t\t\t"Content-Type": mime.lookup(target.displayPath) || "application/octet-stream",',
+          `\t\t\t"Accept-Ranges": "bytes" // ${rangeMarker}`,
+          '\t\t};',
+        ].join('\n')
+      : [
+          '\t\tconst headers = {',
+          '\t\t\t...BASE_HEADERS,',
+          '\t\t\t"Content-Type": mediaType,',
+          `\t\t\t"Accept-Ranges": "bytes" // ${rangeMarker}`,
+          '\t\t};',
+        ].join('\n')
 
+    const earlyCapAnchor = '\t\tif (info.size !== void 0 && info.size > maxBytes) return fail(413, "file exceeds byte limit");'
     const headCapAnchor = '\t\t\tif (info.size !== void 0) {\n\t\t\t\tif (info.size > maxBytes) return fail(413, "file exceeds byte limit");\n\t\t\t\theaders["Content-Length"] = String(info.size);\n\t\t\t}'
-    const headCapReplacement = [
-      '\t\t\t// A media element learns the size through HEAD; the range branch below enforces',
-      '\t\t\t// the per-request bound, so the whole-file cap must not hide the size.',
-      '\t\t\tif (info.size !== void 0) headers["Content-Length"] = String(info.size);',
-    ].join('\n')
+    const capAnchor = versionedRoute ? earlyCapAnchor : headCapAnchor
+    const capReplacement = versionedRoute
+      ? [
+          '\t\t// A media element learns the size through HEAD and streams through Range; both',
+          '\t\t// are bounded per request below, so the whole-file cap must not answer them 413.',
+          '\t\tif (info.size !== void 0 && info.size > maxBytes && request.method !== "HEAD" && request.headers.get("range") === null) return fail(413, "file exceeds byte limit");',
+        ].join('\n')
+      : [
+          '\t\t\t// A media element learns the size through HEAD; the range branch below enforces',
+          '\t\t\t// the per-request bound, so the whole-file cap must not hide the size.',
+          '\t\t\tif (info.size !== void 0) headers["Content-Length"] = String(info.size);',
+        ].join('\n')
 
     const bodyAnchor = '\t\tconst bytes = await fs.readBytes(target, request.signal, maxBytes);'
     const rangeBranch = [
       `\t\t// ${rangeMarker}: one bounded window, streamed as 206.`,
       '\t\tconst range = parseByteRange(request.headers.get("range"));',
       '\t\tif (range !== void 0) {',
-      '\t\t\tconst info = await fs.stat(target, request.signal);',
-      '\t\t\tif (info === void 0) return fail(404, "not found");',
-      '\t\t\tif (info.type !== "file") return fail(403, "not a regular file");',
+      ...(versionedRoute
+        ? []
+        : [
+            '\t\t\tconst info = await fs.stat(target, request.signal);',
+            '\t\t\tif (info === void 0) return fail(404, "not found");',
+            '\t\t\tif (info.type !== "file") return fail(403, "not a regular file");',
+          ]),
       '\t\t\tconst window = info.size === void 0 ? void 0 : resolveByteRange(range, info.size);',
       '\t\t\tif (window === void 0) return new Response(null, {',
       '\t\t\t\tstatus: 416,',
@@ -2236,7 +2341,7 @@ function resolveByteRange(range, size) {
       bodyAnchor,
     ].join('\n')
 
-    const anchors = [helperAnchor, headersAnchor, headCapAnchor, bodyAnchor]
+    const anchors = [helperAnchor, headersAnchor, capAnchor, bodyAnchor]
     const missing = anchors.filter((anchor) => !source.includes(anchor))
     if (missing.length > 0) {
       problems.push(`file route range: ${missing.length} anchor(s) missing in ${sessionControllerPath}`)
@@ -2246,7 +2351,7 @@ function resolveByteRange(range, size) {
         source
           .replace(helperAnchor, helpers)
           .replace(headersAnchor, headersReplacement)
-          .replace(headCapAnchor, headCapReplacement)
+          .replace(capAnchor, capReplacement)
           .replace(bodyAnchor, rangeBranch),
       )
       console.log('file route: ranged reads stream media instead of failing at the whole-file cap')
