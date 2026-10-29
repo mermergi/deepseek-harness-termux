@@ -377,6 +377,14 @@ node ~/.dsh-app/upgrade.mjs --dry-run  # plan only
 
 It stages the release, applies the patches and boots it on a spare port against a throwaway copy of the profile **before** touching the live server; a release that fails that rehearsal exits `10` and the running session is never interrupted. It then owns the stop → atomic swap → patch → start → health-check sequence and rolls back by itself on failure (exit `20`). The previous tree stays patched at `~/dsh.prev` for an instant manual rollback. See [app-scripts/README.md](app-scripts/README.md) for the guards in `ensure-server.mjs` (install-generation binding, auto-rollback after two bad boots).
 
+If you ask for the upgrade from *inside* dsh — an agent turn, a sidebar terminal — the stop kills the caller mid-run, so start it in its own session and let it outlive the server:
+
+```sh
+setsid nohup bash ~/.dsh-app/upgrade-detached.sh 0.2.2-alpha.2 >/dev/null 2>&1 &
+```
+
+The app disconnects for the duration of the swap and comes back when the new tree passes its checks; reopen it afterwards. Progress and the verdict land in `~/.dsh-app/upgrade-detached.log`.
+
 ## After reinstalling or upgrading
 
 `npm install` overwrites everything inside `node_modules`, so **the patches are lost**. The fix is to run them again:
