@@ -675,6 +675,10 @@ if (existsSync(sidebarClientPath)) {
       '\t\t\t\t\t},',
     ].join('\n')
     const oldAnchor = '\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tselectPanel(id);\n\t\t\t\t\t},'
+    // 0.2.2-rc.5 ships this bundle minified: one line, backtick literals, no spaces.
+    // The row body is the same shape, so the anchor is the whole minified `onClick`
+    // block (a bare `selectPanel(id)` also appears in the props wiring below).
+    const minifiedAnchor = 'onClick:()=>{const entry=officialEntry(id);if(entry!==void 0)trackEntryClick({menu_name:entry,position:`sidebar`});selectPanel(id)},'
     const marker = '// ANDROID_PATCH_PANEL_TOGGLE: re-tapping the active panel returns to the conversation.'
     if (source.includes(newAnchor)) {
       writeFileSync(sidebarClientPath, source.replace(newAnchor, newAnchor.replace('\t\t\t\t\t\tselectPanel(id);', `\t\t\t\t\t\tselectPanel(active ? null : id); ${marker}`)))
@@ -687,6 +691,9 @@ if (existsSync(sidebarClientPath)) {
         '\t\t\t\t\t},',
       ].join('\n')
       writeFileSync(sidebarClientPath, source.replace(oldAnchor, replacement))
+      console.log('sidebar: panel icons toggle (tapping the active one closes it)')
+    } else if (source.split(minifiedAnchor).length === 2) {
+      writeFileSync(sidebarClientPath, source.replace(minifiedAnchor, minifiedAnchor.replace('selectPanel(id)},', 'selectPanel(active?null:id)},/*ANDROID_PATCH_PANEL_TOGGLE*/')))
       console.log('sidebar: panel icons toggle (tapping the active one closes it)')
     } else {
       problems.push(`panel toggle: anchor missing in ${sidebarClientPath} (sidebar row layout changed)`)
@@ -728,6 +735,26 @@ if (existsSync(sidebarTooltipPath)) {
   const source = readFileSync(sidebarTooltipPath, 'utf8')
   if (source.includes('ANDROID_PATCH_NO_TOOLTIP')) {
     // already patched
+  } else if (!/\n\t+delayMs: 500,\n/.test(source) && source.includes('delayMs:500,')) {
+    // Minified 0.2.2-rc.5: one line, `delayMs:500,` with no spaces, and the `disabled:wide`
+    // gates sit either right after it or a few keys later. Same order as the readable
+    // path — drop the gate, then disable every tooltip — so no object ends up with two
+    // `disabled` keys whose order decides the outcome.
+    const marked = '/*ANDROID_PATCH_NO_TOOLTIP*/'
+    const gatedParts = source.split(',disabled:wide,')
+    const gates = gatedParts.length - 1
+    let added = 0
+    const patched = gatedParts.join(',').replace(/delayMs:500,/g, () => {
+      added += 1
+      return `delayMs:500,${marked}disabled:!0,`
+    })
+    if (added === 0) {
+      problems.push(`sidebar tooltips: no minified "delayMs:500," anchors in ${sidebarTooltipPath}`)
+    } else {
+      writeFileSync(sidebarTooltipPath, patched)
+      const note = gates > 0 ? `, replaced ${gates} existing gate(s)` : ''
+      console.log(`sidebar tooltips: disabled ${added} hover bubble(s)${note}`)
+    }
   } else {
     const withoutWide = source.split('disabled: wide,\n').join('')
     const dropped = source.length - withoutWide.length
@@ -809,11 +836,18 @@ if (existsSync(generalSettingsPath)) {
       '\t\t\t});',
       '\t\t}',
     ].join('\n')
-    if (!source.includes(anchor)) {
-      problems.push(`restart button: anchor missing in ${generalSettingsPath} (GeneralSection rewritten)`)
-    } else {
+    // 0.2.2-rc.5 ships this bundle minified: the same function, one line, backticked
+    // literals and no spaces. Replacing it with the readable form above also re-arms
+    // patch 24, which recognises the readable `GeneralSection` header.
+    const minifiedAnchor = 'function GeneralSection({renderSlot}){return(0,react_jsx_runtime.jsx)(`div`,{className:GeneralSection_module_css_default.section,children:renderSlot(`settings.general.item`,{})})}'
+    if (source.includes(anchor)) {
       writeFileSync(generalSettingsPath, source.replace(anchor, replacement))
       console.log('settings: restart button added to the General page (visible only in the app)')
+    } else if (source.split(minifiedAnchor).length === 2) {
+      writeFileSync(generalSettingsPath, source.replace(minifiedAnchor, replacement))
+      console.log('settings: restart button added to the General page (visible only in the app)')
+    } else {
+      problems.push(`restart button: anchor missing in ${generalSettingsPath} (GeneralSection rewritten)`)
     }
   }
 } else {
@@ -2017,7 +2051,6 @@ if (existsSync(documentPreviewClientPath)) {
   } else {
     const cssAnchor = '\t\t\t"wrap": "dhJKeW_wrap"\n\t\t};'
     const component = [
-      cssAnchor,
       `\t\t// ${fullPathMarker}: a local path label that reveals the whole path on tap.`,
       '\t\t// The header has a fixed height, so it is allowed to grow only while expanded.',
       '\t\tfunction AndroidFullPathLabel({ path: displayPath, className, ...attributes }) {',
@@ -2078,14 +2111,27 @@ if (existsSync(documentPreviewClientPath)) {
 
     const callSite = '(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.PathLabel, {'
     const callCount = source.split(callSite).length - 1
-    if (!source.includes(cssAnchor) || callCount < 2) {
-      problems.push(`full path: anchors missing in ${documentPreviewClientPath} (call sites: ${callCount})`)
-    } else {
+    // 0.2.2-rc.5 ships this bundle minified: the header renders `PathLabel` once, the CSS
+    // hook is backticked with no spaces, and the readable CSS-module anchor is gone. The
+    // component is inserted before a top-level helper instead, which is module scope in
+    // both shapes — the component body only needs identifiers that exist in both.
+    const minifiedCallSite = '(_deepseek_ai_dsh_client_ui_primitives.PathLabel,{path,className:TextPreview_module_css_default.path,'
+    const minifiedAnchor = 'function pathPartsOf(path){'
+    const minifiedCallCount = source.split(minifiedCallSite).length - 1
+    if (source.includes(cssAnchor) && callCount >= 2) {
       const patched = source
-        .replace(cssAnchor, component)
+        .replace(cssAnchor, `${cssAnchor}\n${component}`)
         .replaceAll(callSite, '(0, react_jsx_runtime.jsx)(AndroidFullPathLabel, {')
       writeFileSync(documentPreviewClientPath, patched)
       console.log(`file preview: tapping the path reveals the full path (${callCount} call sites)`)
+    } else if (source.split(minifiedAnchor).length === 2 && minifiedCallCount === 1) {
+      const patched = source
+        .replace(minifiedAnchor, `${component}\n${minifiedAnchor}`)
+        .replace(minifiedCallSite, '(AndroidFullPathLabel,{path,className:TextPreview_module_css_default.path,')
+      writeFileSync(documentPreviewClientPath, patched)
+      console.log(`file preview: tapping the path reveals the full path (${minifiedCallCount} minified call site)`)
+    } else {
+      problems.push(`full path: anchors missing in ${documentPreviewClientPath} (call sites: ${callCount}, minified: ${minifiedCallCount})`)
     }
   }
 } else {
@@ -2182,14 +2228,54 @@ if (existsSync(openInAppClientPath)) {
         '\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(ANDROID_REVEAL_COPY ? _deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular : _deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, {}),',
       ],
     ]
+    // 0.2.2-rc.5 ships this bundle minified (one line, backtick literals, no spaces), so the
+    // readable anchors above no longer match. Same seven edits, minified style; every
+    // replacement uses a block comment for its marker because a `//` here would comment
+    // out the rest of the file.
+    const minifiedEdits = [
+      [
+        'let _deepseek_ai_dsh_client_ui_primitives=require("@deepseek-ai/dsh-client-ui-primitives");',
+        'let _deepseek_ai_dsh_client_ui_primitives=require("@deepseek-ai/dsh-client-ui-primitives");/*ANDROID_PATCH_REVEAL_COPY*/const ANDROID_REVEAL_COPY=typeof navigator!==`undefined`&&/Android/i.test(navigator.userAgent);',
+      ],
+      [
+        'async openPath(path,action,application){const request=action===`reveal`?',
+        'async openPath(path,action,application){if(ANDROID_REVEAL_COPY&&action===`reveal`){const copied=await _deepseek_ai_dsh_client_ui_primitives.writeClipboard(path);return copied?{kind:`revealed`}:{kind:`failed`,failure:`revealError`}}const request=action===`reveal`?',
+      ],
+      [
+        'text:t(toast.kind===`opened`?`path.opened`:`path.revealed`)',
+        'text:t(toast.kind===`opened`?`path.opened`:ANDROID_REVEAL_COPY?`path.copied`:`path.revealed`)',
+      ],
+      [
+        '"path.reveal":`显示文件位置`,',
+        '"path.reveal":ANDROID_REVEAL_COPY?`复制完整路径`:`显示文件位置`,"path.copied":`已复制完整路径`,',
+      ],
+      [
+        '"path.reveal":`Show file location`,',
+        '"path.reveal":ANDROID_REVEAL_COPY?`Copy full path`:`Show file location`,"path.copied":`Full path copied`,',
+      ],
+      [
+        'revealDefault?(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular,{size:props.prominent?18:13})',
+        'revealDefault?(0,react_jsx_runtime.jsx)(ANDROID_REVEAL_COPY?_deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular:_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular,{size:props.prominent?18:13})',
+      ],
+      [
+        'footer:kind===`file`?[{id:`reveal`,icon:(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular,{})',
+        'footer:kind===`file`?[{id:`reveal`,icon:(0,react_jsx_runtime.jsx)(ANDROID_REVEAL_COPY?_deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular:_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular,{})',
+      ],
+    ]
     const missing = edits.filter(([anchor]) => !source.includes(anchor))
-    if (missing.length > 0) {
-      problems.push(`reveal copy: ${missing.length} anchor(s) missing in ${openInAppClientPath}`)
-    } else {
+    const minifiedMissing = minifiedEdits.filter(([anchor]) => source.split(anchor).length !== 2)
+    if (missing.length === 0) {
       let patched = source
       for (const [anchor, replacement] of edits) patched = patched.replace(anchor, replacement)
       writeFileSync(openInAppClientPath, patched)
       console.log('open in app: Android copies the full path instead of a reveal that cannot work')
+    } else if (minifiedMissing.length === 0) {
+      let patched = source
+      for (const [anchor, replacement] of minifiedEdits) patched = patched.replace(anchor, replacement)
+      writeFileSync(openInAppClientPath, patched)
+      console.log('open in app: Android copies the full path instead of a reveal that cannot work (minified bundle)')
+    } else {
+      problems.push(`reveal copy: ${missing.length} anchor(s) missing in ${openInAppClientPath} (minified: ${minifiedMissing.length})`)
     }
   }
 } else {

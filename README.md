@@ -52,10 +52,10 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Item | Requirement |
 |---|---|
 | OS | Android + Termux (verified on aarch64) |
-| Node.js | `^22.19.0 \|\| >=24.0.0`; `0.2.2-alpha.2` declares `>=24.9.0` (verified on v26.4.0) |
+| Node.js | `^22.19.0 \|\| >=24.0.0`; `0.2.2-rc.5` declares `>=24.9.0` (verified on v26.4.0) |
 | Build toolchain | `clang` + `make` + `python` (node-pty ships no Android prebuild, so node-gyp has to compile it on device) |
 | Search tool | `ripgrep` (`pkg install ripgrep`): `@vscode/ripgrep` has no Android build, see patch 6; with no `rg` on `PATH` the `glob`/`grep` tools are unavailable |
-| Disk | roughly 520 MB (dsh pulls in about 650 npm packages; `0.2.2-alpha.2` measured 648 and 516 MB apparent on this device) |
+| Disk | roughly 900 MB (dsh pulls in about 670 npm packages; `0.2.2-rc.5` measured 667 and 903 MB apparent on this device, `0.2.2-alpha.2` 648 and 726 MB) |
 | Network | access to the npm registry and to the model API of your choice (DeepSeek official, or a compatible gateway) |
 
 ## Quick start
@@ -74,7 +74,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | also install the Termux dependencies with `pkg install` (nodejs python clang make) |
 | `--dir ~/foo` | install somewhere else (the path is written into the launcher's `DSH_DIR`) |
-| `--version 0.2.2-alpha.2` | pin the dsh version, for reproducibility |
+| `--version 0.2.2-rc.5` | pin the dsh version, for reproducibility |
 
 ### Option B: manual, step by step
 
@@ -101,7 +101,7 @@ Three things matter here:
 - **`@img/sharp-wasm32` is not optional.** `sharp` ships no android-arm64 prebuild, and without it the attachment plugin crashes dsh **during startup**.
 - **`--ignore-scripts` is required on the dsh install.** `koffi`, a dependency of dsh, runs a CMake build in its postinstall; that fails on Termux and npm then abandons the whole install. Nothing on this host loads the koffi binding — the working tree carries no koffi binaries either.
 
-> To reproduce the release verified in this document: `0.2.2-alpha.2` (the `alpha` tag; `next` still points at `0.2.1-rc.4` and `latest` at `0.2.1-rc.2`). See [Which version to install](#which-version-to-install).
+> To reproduce the release verified in this document: `0.2.2-rc.5` (npm's `next` and `latest` tags; `alpha` points at `0.2.2-alpha.3`). See [Which version to install](#which-version-to-install).
 
 #### 3. Apply the patches
 
@@ -292,6 +292,11 @@ In other words, this device has only two states — "no sandbox" and "cannot run
 | 26 | "Show file location" can only fail: `无法显示文件位置，请重试` (could not show the file location) | Android has no file manager to reveal a path in — `nativeFileManager()` answers null for `android`, so the button is dead by construction. On Android the same control copies the absolute path through the clipboard helper and confirms with a toast; the label and icon change to "copy full path". Opening the file with a native application is untouched |
 | 27 | A video in the sidebar cannot play: `/api/file` reads the whole file, ignores `Range`, and refuses anything over 20 MB with `413`, so a media element gets `200`/`413` and gives up | honour one byte range per `GET` (`206` + `Content-Range` + `Accept-Ranges`, one bounded 8 MB window), answer `416` for a range that cannot be satisfied, and let `HEAD` report the size; the plain non-ranged `GET` keeps its 20 MB cap. `0.2.2` rewrote this handler to answer a bare `?path=` with `302` to `?path=…&v=…` and only serve the versioned URL, so the patch also keeps `HEAD`/range requests exempt from the whole-file cap that now sits at the top of the function. The [`video-preview/`](video-preview/) bundle carries the version in its URL and streams through this |
 
+`0.2.2-rc.5` builds its client bundles **minified** (one line, backticked literals, no spaces), so
+patches 12, 13, 14, 24, 25 and 26 carry a second, minified anchor set next to the readable one; the
+script picks whichever shape the installed bundle has. A minified build also means those anchors
+will need re-checking at every future release.
+
 The reasoning, the trade-offs and the traps are written up in the comments of `android-fix.mjs`. To check whether the patches are in place: `grep -rl ANDROID_ node_modules`.
 
 **Patches 10 and 11 are worth remembering separately**: they are what `0.1.6-alpha.2` introduced relative to `alpha.1`, and without them nothing boots at all. The root cause of 10 is upstream wiring a **platform-specific native dependency** into the boot path every platform takes, for a package that has never shipped an `android-arm64` build. Patch 15 is patch 10's side effect: `link` mode also turns off the profile-plugin resolution route.
@@ -371,7 +376,7 @@ Upgrading by hand is how this install broke twice: a server kept serving from a 
 
 ```sh
 node ~/.dsh-app/upgrade.mjs            # upgrade to the `next` dist-tag
-node ~/.dsh-app/upgrade.mjs 0.2.2-alpha.2 # explicit version
+node ~/.dsh-app/upgrade.mjs 0.2.2-rc.5 # explicit version
 node ~/.dsh-app/upgrade.mjs --dry-run  # plan only
 ```
 
@@ -380,7 +385,7 @@ It stages the release, applies the patches and boots it on a spare port against 
 If you ask for the upgrade from *inside* dsh — an agent turn, a sidebar terminal — the stop kills the caller mid-run, so start it in its own session and let it outlive the server:
 
 ```sh
-setsid nohup bash ~/.dsh-app/upgrade-detached.sh 0.2.2-alpha.2 >/dev/null 2>&1 &
+setsid nohup bash ~/.dsh-app/upgrade-detached.sh 0.2.2-rc.5 >/dev/null 2>&1 &
 ```
 
 The app disconnects for the duration of the swap and comes back when the new tree passes its checks; reopen it afterwards. Progress and the verdict land in `~/.dsh-app/upgrade-detached.log`.
@@ -399,20 +404,19 @@ That re-run only re-applies patches. A **version** change should go through the 
 
 ### Which version to install
 
-**`0.2.2-alpha.2` is recommended for a fresh install** — the release verified end to end here (2026-10-29):
+**`0.2.2-rc.5` is recommended for a fresh install** — the release verified end to end here (2026-11-20):
 
 ```sh
 cd ~/dsh
 npm install --ignore-scripts \
-  @deepseek-ai/dsh@0.2.2-alpha.2 @deepseek-ai/dsh-client-ui-primitives@0.2.2-alpha.2
+  @deepseek-ai/dsh@0.2.2-rc.5 @deepseek-ai/dsh-client-ui-primitives@0.2.2-rc.5
 npm install @img/sharp-wasm32 sharp
 node ~/dsh/android-fix.mjs
 ```
 
-`0.2.2-alpha.2` sits on npm's `alpha` tag, so nothing resolves to it by accident: `next` points at
-`0.2.1-rc.4` and `latest` at `0.2.1-rc.2`, and a bare `npm install @deepseek-ai/dsh` gets you
-`latest`, not this release. Pin the version. `0.2.1-rc.2` is the previous release verified here and
-the patches still cover it, so rolling back to it keeps working.
+`0.2.2-rc.5` is what npm's `next` and `latest` tags point at, so a bare `npm install
+@deepseek-ai/dsh` now gets it — but pin the version anyway. `0.2.2-alpha.2` and `0.2.1-rc.2` are the
+previous releases verified here, and the patches still cover both, so a rollback keeps working.
 
 The patches read the shapes they find in the installed bundle, so one `android-fix.mjs` serves both
 releases: `0.2.2` rebuilt the settings dialog as a CSS grid (patch 7), moved the "show file
@@ -477,10 +481,10 @@ dsh is in developer preview and upgrades may bring breaking changes. If the scri
 
 **Verified** (Android + Termux, aarch64, Node v26.4.0, 2026-09-15 → 2026-10-29):
 
-- dsh `0.1.5-rc.1` through `0.2.2-alpha.2` install, patch and run; `0.2.2-alpha.2` is the release this document currently targets, `0.2.1-rc.2` the previous one;
-- `0.2.2-alpha.2` on this device: 209 plugin entries with none failed or stalled, the right-sidebar terminal opens, and the `startup-prompt` section lands in the initial system prompt;
-- the `0.2.1-rc.2` → `0.2.2-alpha.2` upgrade ran end to end in a sandbox install (own `DSH_DIR`, `DSH_HOME`, port): stage → patch → rehearsal boot on a spare port → swap → patch → start → health check, all four checks green, and `/api/file` answered `206` with `Content-Range` for a ranged request against the versioned URL;
-- patches 7, 12, 26 and 27 were re-anchored for `0.2.2` (grid settings dialog, `trackEntryClick` row, `report` outcome seat, versioned file route) and still apply to `0.2.1`;
+- dsh `0.1.5-rc.1` through `0.2.2-rc.5` install, patch and run; `0.2.2-rc.5` is the release this document currently targets, `0.2.2-alpha.2` and `0.2.1-rc.2` the previous ones;
+- `0.2.2-rc.5` on this device: 214 plugin entries with none failed or stalled, the right-sidebar terminal opens, and the `startup-prompt` section lands in the initial system prompt;
+- `0.2.2-rc.5` boots from a patched tree on a spare port against a copy of the live profile, with `/api/file` answering `206` + `Content-Range` for a ranged request on the versioned URL;
+- patches 7, 12, 13, 14, 24, 25, 26 and 27 were re-anchored for `0.2.2` (grid settings dialog, `trackEntryClick` row, `report` outcome seat, versioned file route) and again for `0.2.2-rc.5`, whose client bundles ship **minified**; every patch still applies to `0.2.1` and `0.2.2-alpha.2`;
 - the upgrade guards were exercised in a sandbox: a release that fails its rehearsal is rejected with the live server untouched, a failed post-swap health check rolls back to the previous tree, two bad boots trigger the automatic rollback, and a server started before a tree swap is detected and replaced;
 - the Web UI responds and is usable at `127.0.0.1:3080`;
 - one real task ran end to end: model call → `write` tool creates a file → `bash` tool runs `cat` → a Chinese report, with the bytes on disk matching expectations;

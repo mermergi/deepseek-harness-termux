@@ -55,7 +55,7 @@ node -e "require('sharp')(process.argv[1]).metadata().then(m => console.log(m.pa
 | Node.js | `^22.19.0 \|\| >=24.0.0`（dsh 的 engines 要求，实测 v26.4.0） |
 | 编译工具链 | `clang` + `make` + `python`（node-pty 在安卓上没有预编译，要靠 node-gyp 现编） |
 | 搜索工具 | `ripgrep`（`pkg install ripgrep`）：`@vscode/ripgrep` 没有安卓构建，见补丁 6；PATH 里没有 `rg` 时 `glob`/`grep` 工具不可用 |
-| 磁盘 | 约 520 MB（dsh 会拉约 650 个 npm 包；`0.2.2-alpha.2` 实测 648 个、本机 516 MB） |
+| 磁盘 | 约 900 MB（dsh 会拉约 670 个 npm 包；`0.2.2-rc.5` 实测 667 个、本机 903 MB；`0.2.2-alpha.2` 是 648 个 / 726 MB） |
 | 网络 | 能访问 npm registry 和你选的模型 API（DeepSeek 官方或兼容网关） |
 
 ## 快速开始
@@ -74,7 +74,7 @@ bash install.sh --deps
 |---|---|
 | `--deps` | 顺带用 `pkg install` 安装 Termux 依赖（nodejs python clang make） |
 | `--dir ~/foo` | 换安装目录（会自动写进启动脚本的 `DSH_DIR`） |
-| `--version 0.2.2-alpha.2` | 固定 dsh 版本，便于复现 |
+| `--version 0.2.2-rc.5` | 固定 dsh 版本，便于复现 |
 
 ### 方式 B：手动逐步
 
@@ -101,7 +101,7 @@ npm install @img/sharp-wasm32 sharp
 - **必须补 `@img/sharp-wasm32`。** `sharp` 没有 android-arm64 预编译，缺了它附件插件会在**启动阶段**直接让 dsh 崩掉，所以这条不是可选项。
 - **装 dsh 时必须加 `--ignore-scripts`。** dsh 的依赖 `koffi` 会在 postinstall 里跑 CMake 编译，在 Termux 上必然失败，而 npm 一旦遇到脚本失败就会放弃整次安装。这台机器上没有任何东西会加载 koffi 绑定——能正常运行的安装里也没有 koffi 的二进制产物。
 
-> 想复现本文档验证过的版本：`0.2.2-alpha.2`（`alpha` 标签；`next` 停在 `0.2.1-rc.4`、`latest` 停在 `0.2.1-rc.2`）。见[装哪个版本](#装哪个版本)。
+> 想复现本文档验证过的版本：`0.2.2-rc.5`（npm 的 `next` 与 `latest` 都指向它；`alpha` 指向 `0.2.2-alpha.3`）。见[装哪个版本](#装哪个版本)。
 
 #### 3. 打补丁
 
@@ -285,6 +285,9 @@ this host; refusing to run the command unconfined.
 | 26 | 「显示文件位置」只会失败：`无法显示文件位置，请重试` | 安卓没有可用的文件管理器去定位文件——`nativeFileManager()` 对 `android` 返回 null，这个按钮从构造上就是死的。改成：同样的控件在安卓上把**绝对路径复制到剪贴板**，并用 toast 确认；文字与图标改成「复制完整路径」。用原生应用打开文件的那条路不受影响 |
 | 27 | 侧边栏放不了视频：`/api/file` 只返回整文件、忽略 `Range`，还有 20 MB 上限，媒体元素拿到 `200`/`413` 只能放弃 | 让每个带 `Range` 的 `GET` 只读一个字节窗口（`206` + `Content-Range` + `Accept-Ranges`，8 MB 一窗），无法满足返回 `416`，`HEAD` 如实报大小；不带 `Range` 的 GET 保留 20 MB 上限。`0.2.2` 重写了这个 handler：裸 `?path=` 会 `302` 到 `?path=…&v=…`，只按带版本号的 URL 出文件，整文件上限也挪到了函数开头，所以补丁同时让 `HEAD` 和带 `Range` 的请求豁免该上限。`video-preview/` bundle 自带版本号并靠它流式播放 |
 
+`0.2.2-rc.5` 的客户端 bundle 是**压缩成单行**的（反引号字面量、无空格），所以补丁 12、13、14、24、25、26
+各自多带一套"压缩形态"的锚点，脚本按安装目录里实际是哪种形态选一套用。压缩也意味着这些锚点以后每个版本都得重新核对。
+
 原因、取舍与踩过的坑都写在 `android-fix.mjs` 的注释里。判断补丁在不在：`grep -rl ANDROID_ node_modules`。
 
 **第 10、11 条值得单独记住**：它们是 `0.1.6-alpha.2` 相对 `alpha.1` 引入的，不补就完全起不来。第 10 条的根因是上游把一个**平台特定的原生依赖**接进了所有平台的启动必经路径，而那个包从没发布过 `android-arm64`。第 15 条是第 10 条的副作用：`link` 模式同时关掉了 profile 插件的解析路由。
@@ -355,7 +358,7 @@ README 里。
 
 ```sh
 node ~/.dsh-app/upgrade.mjs            # 升到 next dist-tag
-node ~/.dsh-app/upgrade.mjs 0.2.2-alpha.2 # 指定版本
+node ~/.dsh-app/upgrade.mjs 0.2.2-rc.5 # 指定版本
 node ~/.dsh-app/upgrade.mjs --dry-run  # 只看计划
 ```
 
@@ -375,19 +378,18 @@ node ~/dsh/android-fix.mjs
 
 ### 装哪个版本
 
-**新装推荐 `0.2.2-alpha.2`** —— 本机端到端验证过的版本（2026-10-29）：
+**新装推荐 `0.2.2-rc.5`** —— 本机端到端验证过的版本（2026-11-20）：
 
 ```sh
 cd ~/dsh
 npm install --ignore-scripts \
-  @deepseek-ai/dsh@0.2.2-alpha.2 @deepseek-ai/dsh-client-ui-primitives@0.2.2-alpha.2
+  @deepseek-ai/dsh@0.2.2-rc.5 @deepseek-ai/dsh-client-ui-primitives@0.2.2-rc.5
 npm install @img/sharp-wasm32 sharp
 node ~/dsh/android-fix.mjs
 ```
 
-`0.2.2-alpha.2` 挂在 npm 的 `alpha` 标签上，不会被顺手装到：`next` 指向 `0.2.1-rc.4`、`latest`
-停在 `0.2.1-rc.2`，直接 `npm install @deepseek-ai/dsh` 装到的是 `latest`。请显式写版本。
-`0.2.1-rc.2` 是上一个验证过的版本，补丁仍然覆盖它，回滚过去还能用。
+`0.2.2-rc.5` 就是 npm 的 `next` 与 `latest` 指向的版本，`npm install @deepseek-ai/dsh` 会装到它，
+不过还是建议显式写版本。`0.2.2-alpha.2` 与 `0.2.1-rc.2` 是此前验证过的版本，补丁仍然覆盖，回滚过去还能用。
 
 补丁会先读安装目录里代码的实际形状，所以同一个 `android-fix.mjs` 两个版本都吃：`0.2.2` 把设置页
 改成 CSS grid（补丁 7）、把「显示文件位置」的结果提示挪进共享的 `report` 座位（补丁 26）、把
@@ -450,10 +452,10 @@ dsh 目前处于 developer preview，升级可能带来破坏性变更。如果�
 
 **已验证**（Android + Termux，aarch64，Node v26.4.0，2026-09-15 → 2026-10-18）：
 
-- dsh `0.1.5-rc.1` 到 `0.2.2-alpha.2` 各版都装得上、补得齐、跑得通；本文档当前针对 `0.2.2-alpha.2`，上一个验证版本是 `0.2.1-rc.2`；
-- `0.2.2-alpha.2` 在本机：209 个插件条目、0 失败 0 挂起，右侧边栏终端能开，`startup-prompt` 段确实进了初始系统提示词；
-- `0.2.1-rc.2` → `0.2.2-alpha.2` 的升级在沙箱安装里整条跑通（独立 `DSH_DIR`/`DSH_HOME`/端口）：stage → 打补丁 → 备用端口试运行 → 替换 → 打补丁 → 启动 → 健康检查，四项全绿；对带版本号 URL 发带 `Range` 的请求拿到 `206` 与 `Content-Range`；
-- 补丁 7、12、26、27 针对 `0.2.2` 重新锚定（grid 设置页、`trackEntryClick` 行、`report` 结果座位、带版本号的文件路由），同时仍能补 `0.2.1`；
+- dsh `0.1.5-rc.1` 到 `0.2.2-rc.5` 各版都装得上、补得齐、跑得通；本文档当前针对 `0.2.2-rc.5`，此前验证版本是 `0.2.2-alpha.2` 与 `0.2.1-rc.2`；
+- `0.2.2-rc.5` 在本机：214 个插件条目、0 失败 0 挂起，右侧边栏终端能开，`startup-prompt` 段确实进了初始系统提示词；
+- 打完补丁的 `0.2.2-rc.5` 树用一份 profile 副本在备用端口起得来，对带版本号 URL 发带 `Range` 的请求拿到 `206` 与 `Content-Range`；
+- 补丁 7、12、13、14、24、25、26、27 先后针对 `0.2.2`（grid 设置页、`trackEntryClick` 行、`report` 结果座位、带版本号的文件路由）和 `0.2.2-rc.5`（客户端 bundle 变成**压缩单行**）重新锚定，同时仍能补 `0.2.1` 与 `0.2.2-alpha.2`；
 - 升级护栏在沙箱里逐个跑过：演练失败的版本被拒且**正在跑的服务完全没停**、换树后健康检查失败自动回滚、连续两次启动失败自动恢复上一版、换树前启动的老进程能被识别并替换；
 - Web UI 在 `127.0.0.1:3080` 正常返回并可用；
 - 端到端跑通一次真实任务：模型调用 → `write` 工具创建文件 → `bash` 工具执行 `cat` → 中文汇报，磁盘内容与预期一致；
